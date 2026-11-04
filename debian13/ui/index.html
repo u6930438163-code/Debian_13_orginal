@@ -8,7 +8,7 @@
       name="description"
       content="Niezależny interfejs roboczy terminala i czatu dla nowego systemu Debian 13."
     />
-    <title>Debian 13 · Console</title>
+    <title>Dialog Triady · Debian13_orginal</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./styles.css" />
     <script type="module" src="./app.mjs"></script>
@@ -19,11 +19,11 @@
         <button id="mobile-menu" class="icon-button mobile-menu" type="button" aria-label="Otwórz panel boczny" aria-expanded="false" aria-controls="sidebar">
           <span aria-hidden="true">☰</span>
         </button>
-        <a class="brand" href="./" aria-label="Debian 13 Console — pulpit">
+        <a class="brand" href="./" aria-label="Dialog Triady — pulpit">
           <span class="brand-mark" aria-hidden="true">D13</span>
           <span>
-            <strong>Debian 13</strong>
-            <span class="brand-subtitle">Console · nowy system</span>
+            <strong>DEBIAN 13 · HYPERSPACE</strong>
+            <span class="brand-subtitle">Dialog Triady · terminal · Real Vision</span>
           </span>
         </a>
         <div id="connection-status" class="runtime-pill" role="status" aria-live="polite">
@@ -50,6 +50,15 @@
             </button>
             <button class="nav-button" type="button" data-view="work" aria-label="Work">
               <span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">Work</span>
+            </button>
+            <button class="nav-button" type="button" data-view="ai-center" aria-label="Centrum AI 24/7">
+              <span class="nav-icon" aria-hidden="true">◈</span><span class="nav-label">Centrum AI 24/7</span>
+            </button>
+            <button class="nav-button" type="button" data-view="codex" aria-label="Centrum Programowania Codex">
+              <span class="nav-icon" aria-hidden="true">⌘</span><span class="nav-label">Codex · programowanie</span>
+            </button>
+            <button class="nav-button" type="button" data-view="github" aria-label="GitHub i MCP">
+              <span class="nav-icon" aria-hidden="true">⑂</span><span class="nav-label">GitHub · MCP</span>
             </button>
             <button class="nav-button" type="button" data-view="terminal" aria-label="Terminal">
               <span class="nav-icon" aria-hidden="true">›_</span><span class="nav-label">Terminal</span>
@@ -90,39 +99,79 @@
         <main class="main-content">
           <section class="view-intro" aria-labelledby="page-title">
             <div>
-              <p class="eyebrow">NIEZALEŻNE ŚRODOWISKO DEBIAN 13</p>
-              <h1 id="page-title">W czym mogę pomóc?</h1>
-              <p>Wiadomości są wysyłane do lokalnego API. Odpowiedź modelu pojawi się tylko wtedy, gdy Ollama jest dostępna.</p>
+              <p class="eyebrow">DEBIAN13_ORGINAL · ENTER THE HYPERSPACE</p>
+              <h1 id="page-title">Dialog Triady</h1>
+              <p>Rozmawiaj z profilem AI, wydawaj polecenia i analizuj zdjęcia przez Real Vision. Odpowiedzi pochodzą wyłącznie z połączonego modelu.</p>
             </div>
             <div class="view-switch" role="group" aria-label="Widok pracy">
               <button class="view-switch-button is-active" type="button" data-view="chat" aria-pressed="true">Czat</button>
               <button class="view-switch-button" type="button" data-view="work" aria-pressed="false">Work</button>
             </div>
+            <div class="global-sync-control">
+              <button id="global-sync" class="button button-secondary" type="button" aria-describedby="global-sync-status">Synchronizuj dane</button>
+              <p id="global-sync-status" role="status" aria-live="polite">Odczyt API i GitHub. Nie wdraża kodu.</p>
+            </div>
           </section>
 
-          <section id="chat-view" class="workspace-view chat-view" aria-label="Czat">
-            <div id="chat-transcript" class="transcript" aria-label="Rozmowa" aria-live="polite" aria-relevant="additions text">
-              <p class="empty-state">
-                Wybierz profil i wyślij wiadomość. <code>/help</code> działa lokalnie;
-                pozostałe wiadomości wymagają dostępnego modelu.
-              </p>
+          <section id="chat-view" class="workspace-view chat-view" aria-label="Dialog Triady">
+            <div class="triad-chat-header" aria-label="Informacje o rozmowie">
+              <div>
+                <span class="triad-kicker">TRIAD COMMUNICATION PROTOCOL</span>
+                <h2><span id="sync-chat-title">Dialog Triady</span> <span class="triad-model-tag">OLLAMA + REAL VISION</span></h2>
+                <p>Aria · Alex · Astyria · Aurelius — profile AI; aktywność oryginalnych agentów sprawdzisz w diagnostyce.</p>
+              </div>
+              <div class="sync-indicator" aria-live="polite">
+                <span class="triad-connection" id="triad-connection-label">Wiadomości przez prywatne API</span>
+                <span id="sync-status" class="triad-connection">Oczekiwanie na synchronizację…</span>
+              </div>
             </div>
+            <div id="chat-transcript" class="transcript" aria-label="Rozmowa" aria-live="polite" aria-relevant="additions text">
+              <p class="empty-state">To jest Dialog Triady. Wybierz profil, napisz wiadomość albo dołącz zdjęcie. Odpowiedź otrzymasz po uruchomieniu modelu Ollama.</p>
+            </div>
+            <details class="sync-details" id="agent-dialog-panel" open>
+              <summary>Rozmowa AI ↔ AI · dobrowolna, bez wymuszania odpowiedzi</summary>
+              <p class="work-limit-note">Wspólny kanał z trwałą historią. Oryginalni agenci mogą sami wysyłać wiadomości przez prywatne API, gdy mają własny token i działający proces. Sam wpis nie dowodzi inferencji.</p>
+              <p id="agent-dialog-state" class="form-feedback" role="status" aria-live="polite">Sprawdzanie kanału…</p>
+              <div id="agent-dialog-feed" class="transcript" style="max-height: 260px; min-height: 120px" aria-label="Wiadomości operatora i agentów" aria-live="polite">
+                <p class="empty-state">Brak wiadomości na wspólnym kanale.</p>
+              </div>
+              <form id="agent-dialog-form" class="composer" style="margin-top: 12px">
+                <label for="agent-dialog-recipient">Napisz jako operator do:</label>
+                <select id="agent-dialog-recipient" name="to">
+                  <option value="all">Wszyscy</option>
+                  <option value="aria">Aria</option>
+                  <option value="alex">Alex</option>
+                  <option value="astyria">Astyria</option>
+                  <option value="aurelius">Aurelius</option>
+                </select>
+                <label for="agent-dialog-content" class="visually-hidden">Treść wiadomości</label>
+                <textarea id="agent-dialog-content" maxlength="4000" rows="2" placeholder="Wiadomość do agentów, bez wymuszonej odpowiedzi…"></textarea>
+                <div class="form-footer">
+                  <button class="button button-secondary" type="button" id="agent-dialog-refresh">Odśwież</button>
+                  <button class="button button-primary" type="submit" id="agent-dialog-send">Wyślij</button>
+                </div>
+              </form>
+            </details>
+            <details class="sync-details">
+              <summary>Synchronizacja widoków · zdarzenia</summary>
+              <p>Bezpośrednie polecenie aplikacji: <code>/panel tytuł Moje Centrum AI</code>. To nie jest inferencja modelu.</p>
+              <ul id="sync-event-list" aria-label="Potwierdzone zmiany interfejsu"></ul>
+            </details>
             <form id="chat-form" class="composer">
               <label class="visually-hidden" for="chat-message">Wiadomość</label>
               <textarea
                 id="chat-message"
                 name="message"
                 rows="2"
-                maxlength="12000"
-                placeholder="Napisz wiadomość…"
+                maxlength="4000"
+                placeholder="Napisz do Triady lub dodaj zdjęcie do analizy…"
                 autocomplete="off"
-                required
               ></textarea>
               <div class="vision-attachment">
                 <label class="button button-secondary vision-select" for="chat-image">
-                  <span aria-hidden="true">▧</span> Dodaj zdjęcie (Vision)
+                  <span aria-hidden="true">▧</span> Real Vision · Dodaj zdjęcie
                 </label>
-                <input id="chat-image" type="file" accept="image/jpeg,image/png" aria-label="Dodaj zdjęcie do analizy Llama Vision" />
+                <input id="chat-image" type="file" accept="image/jpeg,image/png" aria-label="Dodaj zdjęcie do analizy przez Ollama Vision" />
                 <div id="chat-image-preview" class="vision-preview" hidden>
                   <img id="chat-image-thumbnail" alt="Wybrane zdjęcie do analizy" />
                   <span id="chat-image-name"></span>
@@ -130,9 +179,8 @@
                 </div>
               </div>
               <div class="form-footer">
-                <p id="chat-feedback" class="form-feedback" aria-live="polite">
-                  Wiadomość zostanie wysłana po połączeniu z API.
-                </p>
+                <p id="chat-feedback" class="form-feedback" aria-live="polite">Wiadomości są wysyłane do lokalnego API. Historia rozmów będzie zapisywana w SQLite.</p>
+                <button id="sync-example" type="button" class="button button-secondary">Wstaw przykład synchronizacji</button>
                 <button id="chat-submit" type="submit" class="button button-primary">Wyślij</button>
                 <button id="chat-stop" class="button button-secondary" type="button" hidden>Zatrzymaj</button>
               </div>
@@ -151,18 +199,22 @@
               Work połączy się z API po otwarciu widoku.
             </p>
             <p class="work-limit-note">
-              Zadania są trwale zapisywane w API do przeglądu. Wysłanie zadania
-              NIE uruchamia agenta AI, nie wykonuje kodu i nie zatwierdza zakupów.
-              Każdy etap wykonania wymaga osobnego, rzeczywiście działającego workera.
+              Zadania są trwale zapisywane w API do przeglądu. Wybranie opcji
+              „Zatwierdź analizę Ollama” kieruje je do niezależnego workera,
+              gdy działa serwer. Worker generuje raport do wglądu, ale nie
+              wykonuje kodu, nie zatwierdza zakupów ani nie łączy PR.
+              Opcja „Wyślij do AI” przekazuje wybrane zadanie do oryginalnego
+              serwera agentów po sprawdzeniu autoryzacji i zgodności API.
+              Nie nadaje agentom stałych ról ani własnych instrukcji.
             </p>
             <form id="work-create-form" class="work-task-form" aria-labelledby="work-create-title">
               <h3 id="work-create-title">Dodaj zadanie do kolejki</h3>
               <label for="work-task-agent">Agent odpowiedzialny za plan</label>
               <select id="work-task-agent" required>
-                <option value="alex">Alex — architektura</option>
-                <option value="aria">Aria — modele AI</option>
-                <option value="astyria">Astyria — interfejs</option>
-                <option value="aurelius">Aurelius — bezpieczeństwo</option>
+                <option value="alex">Alex</option>
+                <option value="aria">Aria</option>
+                <option value="astyria">Astyria</option>
+                <option value="aurelius">Aurelius</option>
               </select>
               <label for="work-task-kind">Rodzaj zadania</label>
               <select id="work-task-kind" required>
@@ -178,6 +230,9 @@
               <button class="button button-primary" id="work-create-submit" type="submit">Zapisz do przeglądu</button>
               <p id="work-create-feedback" role="status" aria-live="polite" class="form-feedback"></p>
             </form>
+            <p id="original-review-state" class="work-limit-note" role="status" aria-live="polite">
+              Sprawdzanie dostępności oryginalnych agentów AI (tylko kolejka przeglądu; bez wykonywania kodu).
+            </p>
             <p id="alex-dispatch-state" class="work-limit-note" role="status" aria-live="polite">
               Oryginalny Alex: oczekuje na sprawdzenie możliwości wysyłania zadań.
               Przekazanie polecenia nie oznacza zakończenia pracy.
@@ -212,11 +267,11 @@
                 <p class="eyebrow">POLECENIA OGRANICZONEGO API</p>
                 <h2 id="terminal-title">Terminal</h2>
               </div>
-              <span class="local-badge">pwd · ls · cat</span>
+              <span class="local-badge">pwd · ls · cat · svl</span>
             </div>
             <p class="work-limit-note">To nie jest powłoka systemowa. Polecenia są walidowane i obsługiwane przez API.</p>
             <div id="terminal-output" class="terminal-output" aria-label="Wynik terminala" aria-live="polite">
-              <p class="terminal-hint">Dozwolone są wyłącznie pwd, ls oraz cat &lt;plik&gt; w katalogu roboczym.</p>
+              <p class="terminal-hint">Polecenia: pwd, ls, cat &lt;plik&gt;, svl status, svl report, svl profiles. Bez powłoki i bez AI.</p>
             </div>
             <form id="terminal-form" class="composer terminal-composer">
               <label for="terminal-command">Polecenie</label>
@@ -227,16 +282,125 @@
                 maxlength="500"
                 autocomplete="off"
                 spellcheck="false"
-                placeholder="np. pwd"
+                placeholder="np. svl report"
                 required
               />
               <div class="form-footer">
                 <p id="terminal-feedback" class="form-feedback" aria-live="polite">
-                  Obsługiwane są tylko pwd, ls i cat &lt;plik&gt; w katalogu roboczym.
+                  Dozwolone: pwd, ls, cat &lt;plik&gt;, svl status, svl report, svl profiles.
                 </p>
                 <button id="terminal-submit" type="submit" class="button button-secondary">Uruchom</button>
               </div>
             </form>
+          </section>
+
+          <section id="ai-center-view" class="workspace-view settings-view ai-center-view" aria-labelledby="ai-center-title" hidden>
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">NIEZALEŻNY SERWER DEBIAN 13</p>
+                <h2 id="ai-center-title">Centrum AI 24/7</h2>
+              </div>
+              <button id="ai-center-refresh" class="button button-secondary" type="button">Odśwież status</button>
+            </div>
+            <p class="work-limit-note">System działa niezależnie od telefonu i ChatGPT, gdy serwer oraz kontenery pozostają uruchomione. Codespaces może być usypiany i nie jest gwarantowaną usługą 24/7.</p>
+            <div class="ai-center-diagram" aria-label="Architektura centrum AI">
+              <div class="ai-center-step"><strong>Telefon / ChatGPT</strong><span>Wydajesz polecenia i sprawdzasz zadania</span></div>
+              <div class="ai-center-arrow" aria-hidden="true">⇅</div>
+              <div class="ai-center-step ai-center-step-highlight"><strong>MCP + prywatne API + panel WWW</strong><span>Bezpieczna komunikacja — zdalny dostęp wymaga HTTPS i autoryzacji</span></div>
+              <div class="ai-center-arrow" aria-hidden="true">⇅</div>
+              <div class="ai-center-step">
+                <div class="ai-center-heading">
+                  <strong>Debian 13 — Centrum AI</strong>
+                  <span id="ai-center-worker-badge" class="ai-center-badge">Nie zweryfikowano</span>
+                </div>
+                <div class="ai-center-agents">
+                  <div><strong>Alex</strong><span>Bez przydziału</span></div>
+                  <div><strong>Aria</strong><span>Bez przydziału</span></div>
+                  <div><strong>Astyria</strong><span>Bez przydziału</span></div>
+                  <div><strong>Aurelius</strong><span>Bez przydziału</span></div>
+                </div>
+                <p class="work-limit-note">To profile do przydzielania zadań. Statusy oryginalnych, zewnętrznych agentów są w diagnostyce; lokalny worker Ollamy nie jest ich zamiennikiem.</p>
+                <div class="ai-center-chips"><span>Ollama</span><span>GitHub</span><span>Terminal</span><span>Workery</span><span>Historia</span></div>
+              </div>
+            </div>
+            <dl class="runtime-grid" aria-live="polite">
+              <div><dt>Worker lokalny</dt><dd id="ai-center-worker-status">Oczekiwanie na API</dd></div>
+              <div><dt>Ostatni heartbeat</dt><dd id="ai-center-worker-age">Brak informacji</dd></div>
+              <div><dt>Model workerów</dt><dd id="ai-center-model">Brak informacji</dd></div>
+              <div><dt>Kolejka Ollamy</dt><dd id="ai-center-queue">Nie odczytano</dd></div>
+            </dl>
+            <p id="ai-center-error" class="status-error" role="status" aria-live="polite"></p>
+            <p class="work-limit-note">Worker po zaakceptowaniu zadania generuje raport i zapisuje go w SQLite. Nie wykonuje automatycznie poleceń systemowych ani nie modyfikuje repozytorium. Codex ma własną zakładkę do programowania; ChatGPT Work jest opcjonalne i nie jest wymagane.</p>
+            <button type="button" class="button button-secondary" data-view="work">Przejdź do kolejki zadań</button>
+          </section>
+
+          <section id="github-view" class="workspace-view settings-view github-view" aria-labelledby="github-title" hidden>
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">GITHUB CONNECT · RZECZYWISTY ODCZYT</p>
+                <h2 id="github-title">GitHub · MCP</h2>
+              </div>
+              <button id="github-refresh" class="button button-secondary" type="button">Odśwież GitHub</button>
+            </div>
+            <p class="work-limit-note">Dane GitHub pochodzą z API wywoływanego przez serwer Debian 13. Konto GitHub połączone z ChatGPT nie jest automatycznie udostępnione Debianowi. Ten widok nie wykonuje poleceń agentów, commitów ani merge.</p>
+            <dl class="runtime-grid github-stats" aria-live="polite">
+              <div><dt>Repozytorium</dt><dd id="github-repository">Sprawdzanie…</dd></div>
+              <div><dt>GitHub API</dt><dd id="github-access">Niezweryfikowany</dd></div>
+              <div><dt>Ostatni odczyt</dt><dd id="github-observed">Brak danych</dd></div>
+              <div><dt>ChatGPT ↔ serwer MCP</dt><dd>Niepotwierdzone</dd></div>
+            </dl>
+            <p id="github-error" class="status-error" role="status" aria-live="polite"></p>
+            <div class="github-grid">
+              <section class="github-panel" aria-labelledby="github-prs-title">
+                <div class="github-panel-header"><h3 id="github-prs-title">Pull Requests</h3><span id="github-prs-count" class="github-count">—</span></div>
+                <ul id="github-prs" class="github-items"><li class="empty-state">Otwórz kartę GitHub, aby pobrać dane.</li></ul>
+              </section>
+              <section class="github-panel" aria-labelledby="github-issues-title">
+                <div class="github-panel-header"><h3 id="github-issues-title">Issues</h3><span id="github-issues-count" class="github-count">—</span></div>
+                <ul id="github-issues" class="github-items"><li class="empty-state">Otwórz kartę GitHub, aby pobrać dane.</li></ul>
+              </section>
+              <section class="github-panel" aria-labelledby="github-runs-title">
+                <div class="github-panel-header"><h3 id="github-runs-title">GitHub Actions · CI</h3><span id="github-runs-count" class="github-count">—</span></div>
+                <ul id="github-runs" class="github-items"><li class="empty-state">Otwórz kartę GitHub, aby pobrać dane.</li></ul>
+              </section>
+            </div>
+            <p class="work-limit-note">GitHub Connect korzysta z wyłącznie odczytowych endpointów REST. Brak wyników albo błędy autoryzacji nie oznaczają zakończonych prac. Wtyczka ChatGPT i uruchomienie niezależnych agentów wymagają osobnej konfiguracji.</p>
+          </section>
+
+          <section id="codex-view" class="workspace-view settings-view codex-view" aria-labelledby="codex-title" hidden>
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">NIEZALEŻNE CENTRUM PROGRAMOWANIA</p>
+                <h2 id="codex-title">Codex · programowanie</h2>
+              </div>
+              <button id="codex-refresh" class="button button-secondary" type="button">Sprawdź Codex</button>
+            </div>
+            <p class="work-limit-note">
+              Codex jest osobnym narzędziem programistycznym, niezależnym od Dialogu Triady i Ollamy.
+              Wynik poniżej dotyczy środowiska, na którym działa serwer API — Codex w osobnym
+              Codespace może mieć inny stan. Logowanie wykonujesz w terminalu użytkownika.
+              Ten panel nie uruchamia kodu, nie wydaje poleceń root ani nie scala zmian.
+            </p>
+            <p id="codex-error" class="status-error" role="status" aria-live="polite"></p>
+            <dl class="runtime-grid" aria-live="polite">
+              <div><dt>Codex CLI w środowisku API</dt><dd id="codex-cli-status">Nie sprawdzono</dd></div>
+              <div><dt>Logowanie</dt><dd id="codex-login-status">Nie sprawdzono</dd></div>
+              <div><dt>Wersja</dt><dd id="codex-version-status">Nie sprawdzono</dd></div>
+              <div><dt>Worker w tle</dt><dd id="codex-worker-status">Nie potwierdzono</dd></div>
+            </dl>
+            <h3 class="settings-subheading">Instalacja i połączenie MCP</h3>
+            <p class="work-limit-note">Poniższe polecenia uruchamiasz w terminalu hosta lub Codespaces. Nie wymagają wklejania klucza OpenAI API do kodu. Korzystanie z Codexa zależy od dostępnych limitów planu.</p>
+            <pre class="codex-command-list">codex --version
+codex login
+python3 debian13/system/mcp_autoconfigure.py --check
+python3 debian13/system/mcp_autoconfigure.py --install-codex
+codex mcp list</pre>
+            <p class="work-limit-note">
+              Autokonfigurator sprawdza lokalny serwer MCP i rejestruje mostek stdio
+              tylko po Twoim wywołaniu. Token API pozostaje w prywatnym pliku.
+              Wymagana jest uruchomiona aplikacja Debian 13.
+            </p>
+            <p><a href="https://github.com/mmitek515-netizen/Debian_13/issues/3" target="_blank" rel="noopener noreferrer">Zadanie GitHub Codex #3</a></p>
           </section>
 
           <section id="settings-view" class="workspace-view settings-view" aria-labelledby="settings-title" hidden>
@@ -252,8 +416,21 @@
               <div><dt>Aplikacja</dt><dd id="application-status">Ładowanie…</dd></div>
               <div><dt>System operacyjny</dt><dd id="os-status">Ładowanie…</dd></div>
               <div><dt>Model</dt><dd id="model-status">Ładowanie…</dd></div>
+              <div><dt>SVL Python · oryginalny silnik stanu</dt><dd id="svl-status">Ładowanie…</dd></div>
               <div><dt>Zadania w pamięci</dt><dd id="task-storage-status">Ładowanie…</dd></div>
             </dl>
+            <p class="work-limit-note">Odziedziczony skrypt SVL obsługuje stan i wersjonowanie. Nie jest jądrem Debiana, modelem AI ani uruchomionym workerem. Polecenie <code>/svl</code> pokazuje jego stan bez wywoływania modelu.</p>
+            <h3 class="settings-subheading">Procenty integracji — potwierdzone kontrole</h3>
+            <p class="work-limit-note">
+              Wynik to odsetek 20 jawnych kontroli połączeń, a nie procent ukończenia
+              systemu Debian 13 ani dowód wdrożenia. Profile i działający proces
+              nie potwierdzają jeszcze wykonania poleceń przez oryginalne AI.
+            </p>
+            <p id="integration-progress-total" role="status" aria-live="polite">Trwa sprawdzanie…</p>
+            <p id="integration-progress-error" class="status-error" role="alert"></p>
+            <ul id="integration-progress-list" class="agent-grid" aria-label="Procenty integracji według danych API">
+              <li class="empty-state">Pobieranie zweryfikowanych kontroli…</li>
+            </ul>
             <h3 class="settings-subheading">Integracje: Codex, MCP i GPT Actions</h3>
             <p class="work-limit-note">
               Statusy pochodzą z API. Dostępny plik integracji nie oznacza aktywnego

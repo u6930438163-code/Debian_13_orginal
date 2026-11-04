@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "debian13-connect",
+  "version": "0.1.0",
+  "description": "Private read-only MCP integration between ChatGPT/Codex and a locally running Debian13_orginal instance.",
+  "repository": "https://github.com/mmitek515-netizen/Debian_13",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Debian13 Connect",
+        "shortDescription": "Diagnostyka Debian 13 i MCP",
+        "longDescription": "Sprawdzaj przez lokalny serwer MCP profile agentów, integracje, zadania, diagnostykę i połączenia. Nie wykonuje poleceń administracyjnych ani nie uruchamia workerów.",
+        "developerName": "Debian13_orginal",
+        "category": "Productivity",
+        "capabilities": [
+          "Interactive"
+        ],
+        "defaultPrompt": "Sprawdź rzeczywisty stan Debian13_orginal przez MCP. Oddziel kod przygotowany od zweryfikowanego działania i pokaż blokady."
+      }
+    }
+  }
+}

@@ -1,8 +1,10 @@
+import { readWorkspaceSources, readWithTimeout } from './global_sync.mjs';
+
 export const AGENT_PROFILES = Object.freeze([
-  { id: 'aria', name: 'Aria', role: 'Modele i transport AI' },
-  { id: 'astyria', name: 'Astyria', role: 'Interfejs i ergonomia' },
-  { id: 'aurelius', name: 'Aurelius', role: 'Bezpieczeństwo i testy' },
-  { id: 'alex', name: 'Alex', role: 'Architektura i integracja' },
+  { id: 'aria', name: 'Aria' },
+  { id: 'astyria', name: 'Astyria' },
+  { id: 'aurelius', name: 'Aurelius' },
+  { id: 'alex', name: 'Alex' },
 ]);
 
 const SESSION_KEY = 'debian13-chat-session';
@@ -116,19 +118,30 @@ export function createApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } =
 
   return Object.freeze({
     getStatus: () => request('status'),
+    getCodexStatus: () => request('codex/status'),
+    getAiCenterStatus: () => request('ai-center/status'),
     getAgents: () => request('agents'),
     getOriginalAgents: () => request('original-agents'),
+    getOriginalReviewCapabilities: () => request('original-agents/review-capabilities'),
+    handoffOriginalAgent: (taskId) => request(`tasks/${encodeURIComponent(taskId)}/handoff`, {method: 'POST'}),
+    getOriginalJob: (taskId) => request(`tasks/${encodeURIComponent(taskId)}/original-status`),
+    getGitHubStatus: () => request('github/status'),
+    getSyncState: () => request('sync/state'),
     getIntegrations: () => request('integrations'),
+    getIntegrationProgress: () => request('integration-progress'),
     getTasks: () => request('tasks'),
     getAlexCapabilities: () => request('alex/capabilities'),
     dispatchToAlex: (taskId) => request(`tasks/${encodeURIComponent(taskId)}/dispatch`, {method: 'POST'}),
     createTask: (task) => post('tasks', task),
     getTask: (taskId) => request(`tasks/${encodeURIComponent(taskId)}`),
     getEvents: () => request('events'),
+    getAgentDialog: (after = 0) => request(`agent-dialog/messages?after=${encodeURIComponent(after)}`),
+    postAgentDialog: (to, content) => post('agent-dialog/messages', { to, content }),
     getMessages: (sessionId) => request(`sessions/${encodeURIComponent(sessionId)}/messages`),
     cancelTask: (taskId) => request(`tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }),
+    approveLocalAnalysis: (taskId) => request(`tasks/${encodeURIComponent(taskId)}/approve-analysis`, { method: 'POST' }),
     chatStream,
-    vision: (agent, message, image) => post('vision', { profile: agent, message, image }),
+    vision: (agent, message, image, sessionId) => post('vision', { profile: agent, message, image, ...(sessionId ? { session_id: sessionId } : {}) }),
     terminal: (command) => post('terminal', { command }),
   });
 }
@@ -142,9 +155,11 @@ export function getInitialAgentStatuses() {
 }
 
 function agentStatusLabel(agent) {
-  const profile = agent.status === 'profile_configured'
-    ? 'Profil skonfigurowany'
-    : 'Profil: stan nieznany';
+  const profile = agent.status === 'unassigned'
+    ? 'Bez przydziału — oczekuje na polecenie właściciela'
+    : agent.status === 'profile_configured'
+      ? 'Profil dostępny — zadania nieprzydzielone'
+      : 'Profil: stan nieznany';
   const worker = agent.worker === 'not_running'
     ? 'Worker nieuruchomiony'
     : agent.worker === 'running'
@@ -172,7 +187,7 @@ function renderAgentProfiles(list, agents = getInitialAgentStatuses()) {
 
     const role = document.createElement('p');
     role.className = 'agent-role';
-    role.textContent = agent.role;
+    role.textContent = agent.role || 'Rola: nieprzydzielona';
     const labels = agentStatusLabel(agent);
     const profile = document.createElement('p');
     profile.className = 'agent-state';
@@ -228,6 +243,10 @@ function renderRuntimeStatus(status) {
   setText('application-status', application);
   setText('os-status', `${distribution} · ${boot}`);
   setText('model-status', modelStatusLabel(status.model));
+  const svl = status.svl;
+  setText('svl-status', svl?.stateValid === true
+    ? `${svl.version ?? 'wersja nieznana'} · ${svl.storePresent ? 'stan z pliku' : 'ustawienia domyślne'} · ${svl.chatHistoryEntries ?? 0} wiadomości · bez potwierdzenia startu OS`
+    : 'Silnik SVL niedostępny lub nieprawidłowy · OS nieuruchomiony');
   setText('task-storage-status', status.task_state ?? 'Stan pamięci zadań nieznany');
   setText('status-error', '');
   connectionState('connected', 'API dostępne');
@@ -304,7 +323,8 @@ function renderTasks(tasks) {
     detail.textContent = `${task.title || task.kind} · ${task.agent} · ${task.id}`;
     const status = document.createElement('span');
     status.className = `task-state task-${task.status}`;
-    status.textContent = task.status;
+    status.textContent = task.execution && task.execution !== 'not_started'
+      ? task.execution.replaceAll('_', ' ') : task.status;
     const actions = document.createElement('span');
     actions.className = 'task-actions';
     if (typeof task.id === 'string' && SESSION_ID_PATTERN.test(task.id)) {
@@ -315,7 +335,23 @@ function renderTasks(tasks) {
       reconnect.setAttribute('aria-label', `Pobierz status zadania ${task.id}`);
       reconnect.addEventListener('click', () => void refreshTaskStatus(task.id, reconnect));
       actions.append(reconnect);
-      if (task.agent === 'alex' && task.status === 'queued') {
+      if (task.originalRemoteTaskId) {
+        const inspect = document.createElement('button');
+        inspect.type = 'button';
+        inspect.className = 'task-action';
+        inspect.textContent = 'Sprawdź oryginalne AI';
+        inspect.addEventListener('click', () => void checkOriginalJob(task.id, inspect));
+        actions.append(inspect);
+      } else if (task.status === 'queued' && task.execution === 'not_started') {
+        const handoff = document.createElement('button');
+        handoff.type = 'button';
+        handoff.className = 'task-action';
+        handoff.textContent = 'Wyślij do ' + (AGENT_PROFILES.find(x => x.id === task.agent)?.name || 'AI');
+        handoff.disabled = !originalReviewSupported;
+        handoff.addEventListener('click', () => void sendToOriginalAgent(task.id, handoff));
+        actions.append(handoff);
+      }
+      if (task.agent === 'alex' && task.status === 'queued' && !task.originalRemoteTaskId) {
         const dispatch = document.createElement('button');
         dispatch.type = 'button';
         dispatch.className = 'task-action task-dispatch';
@@ -325,7 +361,26 @@ function renderTasks(tasks) {
         dispatch.addEventListener('click', () => void dispatchWorkToAlex(task.id, dispatch));
         actions.append(dispatch);
       }
-      if (['queued', 'running'].includes(task.status)) {
+      if (!task.originalRemoteTaskId && task.status === 'queued'
+          && ['not_started', 'interrupted_local_analysis',
+              'failed_local_analysis'].includes(task.execution)) {
+        const approve = document.createElement('button');
+        approve.type = 'button';
+        approve.className = 'task-action';
+        approve.textContent = 'Analizuj przez Ollamę';
+        approve.setAttribute('aria-label', `Zatwierdź lokalną analizę zadania ${task.id}`);
+        approve.addEventListener('click', () => void approveWorkForOllama(task.id, approve));
+        actions.append(approve);
+      }
+      if (task.execution === 'completed_local_analysis') {
+        const result = document.createElement('button');
+        result.type = 'button';
+        result.className = 'task-action';
+        result.textContent = 'Pokaż raport';
+        result.addEventListener('click', () => void showLocalAnalysis(task.id, result));
+        actions.append(result);
+      }
+      if (!task.originalRemoteTaskId && ['queued', 'running'].includes(task.status)) {
         const cancel = document.createElement('button');
         cancel.type = 'button';
         cancel.className = 'task-action task-cancel';
@@ -345,7 +400,7 @@ function renderTasks(tasks) {
     fragment.append(empty);
   }
   list.replaceChildren(fragment);
-  setText('tasks-count', `${tasks.length} zadań · trwały zapis SQLite, bez uruchomionych workerów`);
+  setText('tasks-count', `${tasks.length} zadań · trwały zapis SQLite; status workera w Centrum AI`);
   setText('tasks-error', '');
 }
 
@@ -431,7 +486,112 @@ function renderHistory(activeId = '') {
 }
 
 const api = createApiClient();
+let syncedUiTitle = 'Dialog Triady';
+let syncedRevision = -1;
+
+function displaySyncState(data) {
+  if (!Number.isSafeInteger(data?.revision) || data.revision < 0
+      || typeof data.title !== 'string' || data.title.length > 80
+      || !data.title.trim()) {
+    throw new ApiError('Serwer synchronizacji zwrócił nieprawidłowe dane.');
+  }
+  if (data.revision < syncedRevision) return;
+  syncedRevision = data.revision;
+  syncedUiTitle = data.title;
+  setText('sync-chat-title', data.title);
+  const chatView = document.getElementById('chat-view');
+  if (chatView && !chatView.hidden) setText('page-title', data.title);
+  setText('sync-status', 'Synchronizacja SQLite · wersja ' + data.revision);
+  const items = document.getElementById('sync-event-list');
+  if (items) {
+    const fragment = document.createDocumentFragment();
+    for (const item of (Array.isArray(data.events) ? data.events : []).slice(0, 5)) {
+      if (!Number.isSafeInteger(item.revision) || typeof item.label !== 'string') continue;
+      const li = document.createElement('li');
+      li.textContent = 'v' + item.revision + ' · ' + item.label;
+      fragment.append(li);
+    }
+    items.replaceChildren(fragment);
+  }
+}
+
+async function refreshSyncState() {
+  try {
+    const data = await api.getSyncState();
+    displaySyncState(data);
+    return data;
+  } catch (error) {
+    setText('sync-status', 'Synchronizacja niedostępna · ' + error.message);
+    return null;
+  }
+}
+
+function renderGithubItems(items, elementId, category) {
+  const target = document.getElementById(elementId);
+  if (!target) return;
+  const fragment = document.createDocumentFragment();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (typeof item.title !== 'string' || typeof item.url !== 'string') continue;
+    const li = document.createElement('li');
+    li.className = 'github-item';
+    const a = document.createElement('a');
+    a.href = item.url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.textContent = (category === 'runs' ? 'Run ' : '#') + item.number + ' · ' + item.title;
+    const label = document.createElement('small');
+    label.textContent = category === 'runs'
+      ? (item.conclusion || item.status || 'Brak wyniku')
+      : (item.draft ? 'Draft · ' : '') + (item.state || 'Nieznany');
+    li.append(a, label);
+    fragment.append(li);
+  }
+  if (!fragment.hasChildNodes()) {
+    const empty = document.createElement('li');
+    empty.textContent = 'Brak pozycji w zweryfikowanym odczycie.';
+    fragment.append(empty);
+  }
+  target.replaceChildren(fragment);
+}
+
+async function refreshGithub() {
+  setText('github-error', '');
+  setText('github-access', 'Pobieranie z GitHub API…');
+  const button = document.getElementById('github-refresh');
+  if (button) button.disabled = true;
+  try {
+    const result = await api.getGitHubStatus();
+    if (typeof result.repository !== 'string' || !Array.isArray(result.pullRequests)
+        || !Array.isArray(result.issues) || !Array.isArray(result.runs)) {
+      throw new ApiError('Nieoczekiwana odpowiedź GitHub.');
+    }
+    setText('github-repository', result.repository);
+    setText('github-access', result.githubApiReachable
+      ? (result.partial ? 'Połączony · częściowe dane' : 'Połączony · odczyt danych')
+      : 'GitHub API niedostępne');
+    const ts = new Date(result.observedAt);
+    setText('github-observed', Number.isNaN(ts.getTime()) ? 'Nieznany' : ts.toLocaleString('pl-PL'));
+    renderGithubItems(result.pullRequests, 'github-prs', 'prs');
+    renderGithubItems(result.issues, 'github-issues', 'issues');
+    renderGithubItems(result.runs, 'github-runs', 'runs');
+    setText('github-prs-count', String(result.pullRequests.length));
+    setText('github-issues-count', String(result.issues.length));
+    setText('github-runs-count', String(result.runs.length));
+    const errors = Object.entries(result.errors || {}).map(([k,v]) => k + ': ' + v);
+    if (errors.length) setText('github-error', errors.join(' · '));
+  } catch (error) {
+    setText('github-access', 'Niepołączony');
+    setText('github-error', error.message);
+    renderGithubItems([], 'github-prs', 'prs');
+    renderGithubItems([], 'github-issues', 'issues');
+    renderGithubItems([], 'github-runs', 'runs');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 let alexDispatchSupported = false;
+let originalReviewSupported = false;
 let activeSessionId = '';
 let activeChatController = null;
 let activeChatTaskId = '';
@@ -440,14 +600,14 @@ let activeChatCancelMessage = '';
 async function loadStatus() {
   connectionState('loading', 'Ładowanie statusu…');
   setText('status-error', '');
-  for (const id of ['application-status', 'os-status', 'model-status', 'task-storage-status']) {
+  for (const id of ['application-status', 'os-status', 'model-status', 'task-storage-status', 'svl-status']) {
     setText(id, 'Ładowanie…');
   }
   try {
     renderRuntimeStatus(await api.getStatus());
   } catch (error) {
     connectionState('error', error.status === 401 ? 'Wymagana autoryzacja' : 'Runtime niedostępny');
-    for (const id of ['application-status', 'os-status', 'model-status', 'task-storage-status']) {
+    for (const id of ['application-status', 'os-status', 'model-status', 'task-storage-status', 'svl-status']) {
       setText(id, 'Niedostępny');
     }
     setText('status-error', error.message);
@@ -471,7 +631,7 @@ async function loadOriginalAgents() {
       heading.textContent = agent.name;
       const role = document.createElement('p');
       role.className = 'agent-role';
-      role.textContent = agent.role;
+      role.textContent = agent.role || 'Rola: nieprzydzielona';
       const status = document.createElement('p');
       status.className = 'agent-state';
       status.textContent = agent.workerVerified === true
@@ -507,6 +667,101 @@ async function loadAgents() {
     setText('agent-count', 'Profile niedostępne');
     setText('agent-error', error.message);
     renderAgentProfiles(document.getElementById('agent-list'));
+  }
+}
+
+async function loadAiCenterStatus() {
+  if (!document.getElementById('ai-center-worker-status')) return;
+  setText('ai-center-error', '');
+  try {
+    const status = await api.getAiCenterStatus();
+    if (status.type !== 'local_ollama_queue' || typeof status.workerHeartbeatVerified !== 'boolean') {
+      throw new ApiError('Serwer zwrócił nieprawidłowy status Centrum AI.');
+    }
+    setText('ai-center-worker-badge', status.workerHeartbeatVerified ? 'Worker online' : 'Worker offline');
+    setText('ai-center-worker-status', status.workerHeartbeatVerified
+      ? 'Proces lokalny potwierdzony heartbeat; wnioskowanie wymaga testu'
+      : 'Brak aktywnego heartbeat');
+    setText('ai-center-worker-age', status.heartbeatAgeSeconds == null
+      ? 'Brak' : `${status.heartbeatAgeSeconds} sekund temu`);
+    setText('ai-center-model', status.modelConfigured || 'Brak konfiguracji');
+    const jobs = status.queuedByExecution || {};
+    setText('ai-center-queue', Object.entries(jobs).length
+      ? Object.entries(jobs).map(([state, count]) => `${state.replaceAll('_',' ')}: ${count}`).join(' · ')
+      : 'Brak przetworzonych lub zatwierdzonych zadań');
+  } catch (error) {
+    setText('ai-center-error', error.message);
+    setText('ai-center-worker-badge', 'Brak połączenia');
+    setText('ai-center-worker-status', 'Niezweryfikowany');
+  }
+}
+
+async function loadCodexStatus() {
+  if (!document.getElementById('codex-cli-status')) return;
+  setText('codex-error', '');
+  try {
+    const status = await api.getCodexStatus();
+    if (status.module !== 'codex' || typeof status.cliInstalled !== 'boolean') {
+      throw new ApiError('Codex API zwróciło nieprawidłowy status.');
+    }
+    setText('codex-cli-status', status.cliInstalled ? 'Zainstalowany na hoście API' : 'Brak na hoście API');
+    setText('codex-version-status', status.version ?? 'Niedostępna');
+    const auth = {authenticated: 'Zalogowano na hoście API', not_authenticated: 'Wymagane logowanie',
+                  not_installed: 'Najpierw zainstaluj Codex CLI', check_unavailable: 'Nie udało się sprawdzić',
+                  not_checked: 'Nie sprawdzono', unknown: 'Stan niejednoznaczny'};
+    setText('codex-login-status', auth[status.authentication] ?? 'Nie potwierdzono');
+    setText('codex-worker-status', status.cloudWorkerVerified === true
+      ? 'Zweryfikowany worker' : 'Niezweryfikowany / nieuruchomiony przez ten panel');
+  } catch (error) {
+    setText('codex-error', error.message);
+    for (const id of ['codex-cli-status', 'codex-login-status',
+                      'codex-version-status', 'codex-worker-status']) {
+      setText(id, 'Nie udało się pobrać');
+    }
+  }
+}
+
+async function loadIntegrationProgress() {
+  const list = document.getElementById('integration-progress-list');
+  if (!list) return;
+  list.replaceChildren();
+  try {
+    const data = await api.getIntegrationProgress();
+    if (data.kind !== 'local_integration_checklist'
+        || data.notOsCompletion !== true || data.notDeploymentProof !== true
+        || !Number.isInteger(data.percentage)
+        || !Array.isArray(data.modules)) {
+      throw new ApiError('Nieprawidłowe dane postępu integracji.');
+    }
+    setText('integration-progress-total',
+      `${data.percentage}% kontroli integracji (${data.verifiedCount}/${data.totalCount})`);
+    for (const module of data.modules) {
+      if (!Number.isInteger(module.percentage) || module.percentage < 0
+          || module.percentage > 100 || !Array.isArray(module.checkpoints)) {
+        throw new ApiError('Błędny wpis na liście integracji.');
+      }
+      const item = document.createElement('li');
+      item.className = 'agent-card';
+      const heading = document.createElement('strong');
+      heading.textContent = `${module.name}: ${module.percentage}%`;
+      const bar = document.createElement('progress');
+      bar.value = module.percentage;
+      bar.max = 100;
+      bar.style.width = '100%';
+      bar.setAttribute('aria-label', `Poziom kontroli: ${module.name}`);
+      const details = document.createElement('p');
+      details.className = 'agent-role';
+      const passed = module.checkpoints.filter(check => check.verified === true).length;
+      details.textContent = `${passed}/${module.checkpoints.length} kontroli potwierdzonych. `
+        + (module.connected === true ? 'Ostatni etap potwierdzony.'
+          : 'Brak potwierdzenia końcowego połączenia/wykonania.');
+      item.append(heading, bar, details);
+      list.append(item);
+    }
+    setText('integration-progress-error', '');
+  } catch (error) {
+    setText('integration-progress-total', 'Postęp niezweryfikowany');
+    setText('integration-progress-error', error.message);
   }
 }
 
@@ -607,6 +862,72 @@ async function refreshAlexCapabilities() {
   return alexDispatchSupported;
 }
 
+async function refreshOriginalReviewCapabilities() {
+  originalReviewSupported = false;
+  try {
+    const response = await api.getOriginalReviewCapabilities();
+    const state = response.originalAgents;
+    originalReviewSupported = state?.supported === true && state?.allowed === true;
+    setText('original-review-state', originalReviewSupported
+      ? 'API oryginalnych AI potwierdziło zgodny protokół kolejki Ollama. To nie dowodzi wykonania zadania.'
+      : 'Wysyłanie do oryginalnych AI nieaktywne. Wymaga włączenia opt-in i zgodnego źródła.');
+  } catch (error) {
+    setText('original-review-state', 'Oryginalne AI niedostępne: ' + error.message);
+  }
+  return originalReviewSupported;
+}
+
+async function sendToOriginalAgent(taskId, button) {
+  if (!originalReviewSupported || button.disabled) return;
+  if (!window.confirm(
+    'Przekazać zadanie do oryginalnego AI Studio? To zlecenie analizy przez Ollamę, nie zapis kodu, nie zakup i nie automatyczny PR.'
+  )) return;
+  button.disabled = true;
+  try {
+    const data = await api.handoffOriginalAgent(taskId);
+    if (!data.originalSubmission || data.executionStarted !== false) {
+      throw new ApiError('Źródło nie potwierdziło przyjęcia zadania.');
+    }
+    setText('work-connection-state', 'Źródło AI przyjęło zadanie. Wynik sprawdzisz przyciskiem „Sprawdź oryginalne AI”.');
+    await refreshWork();
+  } catch (error) {
+    setText('tasks-error', error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function checkOriginalJob(taskId, button) {
+  button.disabled = true;
+  try {
+    const response = await api.getOriginalJob(taskId);
+    const result = response.originalJob;
+    if (!result || typeof result.status !== 'string') {
+      throw new ApiError('Brak zweryfikowanego statusu oryginalnego AI.');
+    }
+    const item = button.closest('[data-task-id]');
+    const state = item?.querySelector('.task-state');
+    if (state) state.textContent = 'Oryginalne AI: ' + result.status
+      + (result.agentExecutionVerified ? ' · model odpowiedział' : ' · bez dowodu ukończenia');
+    const previous = item?.querySelector('.original-ai-result');
+    previous?.remove();
+    if (result.agentExecutionVerified && typeof result.result === 'string') {
+      const report = document.createElement('pre');
+      report.className = 'original-ai-result';
+      report.textContent = result.result;
+      item?.append(report);
+    }
+    setText('work-connection-state',
+      result.agentExecutionVerified
+        ? 'Zweryfikowano zapis odpowiedzi modelu. To nadal NIE potwierdza zmian w GitHub.'
+        : 'Zdalny status: ' + result.status + '. Nie potwierdzono wykonania przez model.');
+  } catch (error) {
+    setText('tasks-error', error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function dispatchWorkToAlex(taskId, button) {
   if (!alexDispatchSupported || button.disabled) return;
   const approved = window.confirm(
@@ -638,7 +959,9 @@ async function refreshWork() {
     button.textContent = 'Łączenie…';
   }
   setText('work-connection-state', 'Ponowne łączenie z API…');
-  const [tasksError, eventsError] = await Promise.all([loadTasks(), loadEvents(), refreshAlexCapabilities()]);
+  const [tasksError, eventsError] = await Promise.all([
+    loadTasks(), loadEvents(), refreshAlexCapabilities(), refreshOriginalReviewCapabilities(),
+  ]);
   // The buttons were initially rendered before reading actual remote capabilities.
   if (!tasksError) await loadTasks();
   const error = tasksError ?? eventsError;
@@ -683,6 +1006,50 @@ async function refreshTaskStatus(taskId, button) {
   }
 }
 
+async function approveWorkForOllama(taskId, button) {
+  if (button.disabled) return;
+  if (!window.confirm('Zatwierdzić lokalną analizę tego zadania przez Ollamę? Worker zapisze raport. Nie uruchomi poleceń ani nie zmieni repozytorium.')) return;
+  button.disabled = true;
+  try {
+    const response = await api.approveLocalAnalysis(taskId);
+    if (response.task?.execution !== 'approved_local_analysis') {
+      throw new ApiError('Serwer nie potwierdził akceptacji zadania.');
+    }
+    setText('work-connection-state', response.localWorkerHeartbeatVerified
+      ? 'Zatwierdzono zadanie. Aktywny worker Ollamy pobierze je z kolejki.'
+      : 'Zatwierdzono zadanie. Oczekuje na uruchomienie workera Ollamy.');
+    await refreshWork();
+  } catch (error) {
+    setText('tasks-error', error.message);
+    button.disabled = false;
+  }
+}
+
+async function showLocalAnalysis(taskId, button) {
+  button.disabled = true;
+  try {
+    const payload = await api.getTask(taskId);
+    const report = payload.localAnalysis;
+    if (!report || typeof report.content !== 'string') {
+      throw new ApiError('Raport nie jest jeszcze dostępny.');
+    }
+    const item = button.closest('[data-task-id]');
+    if (!item) return;
+    let detail = item.querySelector('.ai-task-result');
+    if (!detail) {
+      detail = document.createElement('pre');
+      detail.className = 'ai-task-result';
+      item.append(detail);
+    }
+    detail.textContent = report.content;
+    setText('work-connection-state', `Raport modelu ${report.model} (propozycja; żadnych zmian w plikach).`);
+  } catch (error) {
+    setText('tasks-error', error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function cancelWorkTask(taskId, button) {
   button.disabled = true;
   setText('work-connection-state', 'Wysyłanie żądania anulowania do API…');
@@ -703,8 +1070,61 @@ async function cancelWorkTask(taskId, button) {
 }
 
 async function refreshDashboard() {
-  await Promise.all([loadStatus(), loadAgents(), loadOriginalAgents(), loadIntegrations(), loadTasks()]);
+  await Promise.all([loadStatus(), loadAgents(), loadOriginalAgents(), loadIntegrations(), loadIntegrationProgress(), loadTasks(), loadAiCenterStatus()]);
 }
+
+let globalSyncBusy = false;
+
+async function synchronizeAllData() {
+  if (globalSyncBusy) return;
+  const button = document.getElementById('global-sync');
+  const status = document.getElementById('global-sync-status');
+  if (!button || !status) return;
+  globalSyncBusy = true;
+  button.disabled = true;
+  button.textContent = 'Synchronizacja…';
+  status.textContent = 'Sprawdzanie źródeł danych API…';
+  try {
+    // This checks current data only; GitHub checkout/deploy and external AI work
+    // require separate authorized operations. Never claim a code deployment.
+    const evidence = await readWorkspaceSources(api);
+    // Bound the second-stage UI rendering too: source probes alone are not
+    // enough when a dashboard request becomes unresponsive.
+    const refreshed = await Promise.allSettled([
+      () => refreshSyncState(), () => refreshDashboard(), () => refreshWork(),
+      () => refreshGithub(), () => loadCodexStatus(),
+    ].map(view => readWithTimeout(view)));
+    const syncState = refreshed[0];
+    const workState = refreshed[2];
+    const renderFailed = refreshed.some(x => x.status === 'rejected')
+      || (syncState.status === 'fulfilled' && syncState.value === null)
+      || (workState.status === 'fulfilled' && workState.value === false);
+    let historyFailed = false;
+    if (activeSessionId && !activeChatController) {
+      try {
+        await readWithTimeout(() => loadHistory(activeSessionId));
+      } catch {
+        historyFailed = true;
+      }
+    }
+    document.getElementById('agent-dialog-refresh')?.click();
+    const missing = evidence.failed.join(', ');
+    const partial = !evidence.complete || renderFailed || historyFailed;
+    status.textContent = partial
+      ? `Odczyt ${evidence.successful}/${evidence.total} źródeł`
+          + (missing ? ` · niedostępne: ${missing}` : ' · część widoków niedostępna')
+          + '. Bez wdrażania kodu GitHub.'
+      : `Odczyt ${evidence.successful}/${evidence.total} źródeł potwierdzony. `
+          + 'Odświeżono panel; kod GitHub nie był wdrażany.';
+  } catch {
+    status.textContent = 'Nie udało się odczytać stanu. Nic nie wdrożono ani nie zmieniono na GitHubie.';
+  } finally {
+    globalSyncBusy = false;
+    button.disabled = false;
+    button.textContent = 'Synchronizuj dane';
+  }
+}
+
 
 async function loadHistory(sessionId) {
   if (!SESSION_ID_PATTERN.test(sessionId)) return;
@@ -721,7 +1141,7 @@ async function loadHistory(sessionId) {
     renderTranscriptMessages(payload.messages);
     renderHistory(activeSessionId);
     showView('chat');
-    setText('chat-feedback', 'Historia pobrana z pamięci API.');
+    setText('chat-feedback', 'Historia Dialogu Triady odtworzona z lokalnej bazy SQLite.');
   } catch (error) {
     const history = readHistory().filter((item) => item.id !== sessionId);
     writeHistory(history);
@@ -745,7 +1165,7 @@ function recordHistory(sessionId, title) {
 }
 
 function showView(view) {
-  const ids = { chat: 'chat-view', work: 'work-view', terminal: 'terminal-view', settings: 'settings-view' };
+  const ids = { chat: 'chat-view', work: 'work-view', 'ai-center': 'ai-center-view', codex: 'codex-view', github: 'github-view', terminal: 'terminal-view', settings: 'settings-view' };
   for (const [name, id] of Object.entries(ids)) {
     const section = document.getElementById(id);
     if (section) section.hidden = name !== view;
@@ -760,7 +1180,7 @@ function showView(view) {
       button.setAttribute('aria-pressed', String(active));
     }
   }
-  const titles = { chat: 'W czym mogę pomóc?', work: 'Work', terminal: 'Terminal', settings: 'Status systemu' };
+  const titles = { chat: syncedUiTitle, work: 'Work', 'ai-center': 'Centrum AI 24/7', codex: 'Centrum Programowania Codex', github: 'GitHub · MCP', terminal: 'Terminal', settings: 'Status systemu' };
   setText('page-title', titles[view] ?? titles.chat);
 }
 
@@ -810,6 +1230,9 @@ function bindNavigation() {
     button.addEventListener('click', () => {
       showView(button.dataset.view);
       if (button.dataset.view === 'work') void refreshWork();
+      if (button.dataset.view === 'codex') void loadCodexStatus();
+      if (button.dataset.view === 'github') void refreshGithub();
+      if (button.dataset.view === 'ai-center') void loadAiCenterStatus();
       setMobileSidebar(false);
     });
   });
@@ -881,84 +1304,128 @@ async function prepareVisionImage(file) {
 }
 
 function bindChatForm() {
+  // Dialog Triady: independent, UI-only chat controller, shared authenticated API.
+  // The agent dropdown selects a profile, not proof of an autonomous worker.
   const form = document.getElementById('chat-form');
-  if (!form) return;
   const message = document.getElementById('chat-message');
-  const attachment = document.getElementById('chat-image');
+  const fileInput = document.getElementById('chat-image');
   const preview = document.getElementById('chat-image-preview');
-  const thumbnail = document.getElementById('chat-image-thumbnail');
-  const fileName = document.getElementById('chat-image-name');
-  let previewUrl = '';
+  const previewImage = document.getElementById('chat-image-thumbnail');
+  const previewName = document.getElementById('chat-image-name');
+  const feedback = document.getElementById('chat-feedback');
+  const submit = document.getElementById('chat-submit');
+  const stop = document.getElementById('chat-stop');
+  if (!form || !message || !fileInput || !feedback || !submit || !stop) return;
+
+  let filePreviewUrl = '';
   let visionBusy = false;
-  const clearAttachment = () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    previewUrl = '';
-    if (attachment) attachment.value = '';
-    if (thumbnail) thumbnail.removeAttribute('src');
+  const clearPhoto = () => {
+    if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+    filePreviewUrl = '';
+    fileInput.value = '';
+    if (previewImage) previewImage.removeAttribute('src');
     if (preview) preview.hidden = true;
+    if (previewName) previewName.textContent = '';
   };
-  attachment?.addEventListener('change', () => {
-    clearAttachmentPreviewOnly();
-    const file = attachment.files?.[0];
+  const showError = (error, label = 'Błąd Dialogu Triady') => {
+    const detail = typeof error?.message === 'string' ? error.message : 'Nie udało się wykonać operacji.';
+    appendTranscript('error', label, detail);
+    feedback.textContent = detail;
+  };
+  const setBusy = (busy, canStop = false) => {
+    submit.disabled = busy;
+    submit.hidden = busy && canStop;
+    stop.hidden = !(busy && canStop);
+    if (!busy) {
+      stop.disabled = false;
+      stop.textContent = 'Zatrzymaj';
+    }
+  };
+
+  fileInput.addEventListener('change', () => {
+    clearPhotoPreview();
+    const file = fileInput.files?.[0];
     if (!file) return;
-    if (!['image/png', 'image/jpeg'].includes(file.type) || file.size > 8 * 1024 * 1024) {
-      setText('chat-feedback', 'Wybierz obraz JPEG/PNG o rozmiarze do 8 MB.');
-      attachment.value = '';
+    if (!['image/jpeg', 'image/png'].includes(file.type) || file.size > 8 * 1024 * 1024) {
+      fileInput.value = '';
+      feedback.textContent = 'Real Vision obsługuje zdjęcia JPEG/PNG do 8 MB.';
       return;
     }
-    previewUrl = URL.createObjectURL(file);
-    if (thumbnail) thumbnail.src = previewUrl;
-    if (fileName) fileName.textContent = file.name;
+    filePreviewUrl = URL.createObjectURL(file);
+    if (previewImage) previewImage.src = filePreviewUrl;
+    if (previewName) previewName.textContent = file.name;
     if (preview) preview.hidden = false;
+    feedback.textContent = 'Zdjęcie jest gotowe. Możesz dodać pytanie lub wysłać je bez tekstu.';
   });
-  function clearAttachmentPreviewOnly() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    previewUrl = '';
-    if (thumbnail) thumbnail.removeAttribute('src');
+  function clearPhotoPreview() {
+    if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+    filePreviewUrl = '';
+    if (previewImage) previewImage.removeAttribute('src');
     if (preview) preview.hidden = true;
   }
-  document.getElementById('chat-image-remove')?.addEventListener('click', clearAttachment);
-  message?.addEventListener('keydown', (event) => {
+  document.getElementById('chat-image-remove')?.addEventListener('click', clearPhoto);
+  message.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       form.requestSubmit();
     }
   });
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const agent = document.getElementById('chat-agent');
-    const submit = document.getElementById('chat-submit');
-    const stop = document.getElementById('chat-stop');
-    const feedback = document.getElementById('chat-feedback');
-    const text = message?.value.trim();
-    if (!text || !agent || !feedback || activeChatController || visionBusy) return;
-    const file = attachment?.files?.[0] ?? null;
-    if (file) {
+    if (activeChatController || visionBusy) return;
+    const agentId = document.getElementById('chat-agent')?.value;
+    if (!AGENT_PROFILES.some(({ id }) => id === agentId)) {
+      feedback.textContent = 'Wybierz profil agenta.';
+      return;
+    }
+    const text = message.value.trim();
+    const photo = fileInput.files?.[0] ?? null;
+    if (!text && !photo) {
+      feedback.textContent = 'Napisz wiadomość albo dodaj zdjęcie.';
+      return;
+    }
+    if (text.length > 4000) {
+      feedback.textContent = 'Wiadomość przekracza limit 4000 znaków API.';
+      return;
+    }
+
+    const name = AGENT_PROFILES.find(({ id }) => id === agentId)?.name ?? agentId;
+    const prompt = text || 'Opisz dokładnie zdjęcie.';
+    const previousSession = activeSessionId;
+    appendTranscript('user', `Ty · ${name}${photo ? ' · Real Vision' : ''}`,
+      photo ? `${prompt} [dołączono zdjęcie]` : prompt);
+    const bubble = appendTranscript('assistant', `${name} · łączenie z modelem`, '');
+    setBusy(true, !photo);
+
+    if (photo) {
       visionBusy = true;
-      submit.disabled = true;
-      const name = AGENT_PROFILES.find((profile) => profile.id === agent.value)?.name ?? agent.value;
-      appendTranscript('user', `Ty · ${name} · zdjęcie`, `${text} (dołączono obraz)`);
-      const answer = appendTranscript('assistant', `${name} · analizuje zdjęcie`, 'Wysyłanie do Vision…');
-      feedback.textContent = 'Analiza obrazu przez model Vision…';
+      feedback.textContent = 'Real Vision: przygotowywanie zdjęcia do Ollamy…';
       try {
-        const prepared = await prepareVisionImage(file);
-        const result = await api.vision(agent.value, text, prepared);
-        if (typeof result.content !== 'string') throw new ApiError('Brak tekstu odpowiedzi modelu Vision.');
-        if (answer) {
-          answer.text.textContent = result.content;
-          answer.heading.textContent = `${name} · ${result.model ?? 'Vision'}`;
+        const encoded = await prepareVisionImage(photo);
+        feedback.textContent = 'Real Vision: oczekiwanie na odpowiedź modelu…';
+        const response = await api.vision(agentId, prompt, encoded, previousSession);
+        if (typeof response.content !== 'string' || !response.content.trim()) {
+          throw new ApiError('Model Vision zwrócił pustą odpowiedź.');
+        }
+        if (bubble) {
+          bubble.text.textContent = response.content;
+          bubble.heading.textContent = `${name} · ${response.model || 'Real Vision'}`;
+        }
+        if (response.sessionId && SESSION_ID_PATTERN.test(response.sessionId)) {
+          activeSessionId = response.sessionId;
+          recordHistory(response.sessionId, prompt);
         }
         message.value = '';
-        clearAttachment();
-        feedback.textContent = 'Odpowiedź modelu Vision otrzymana z API.';
+        clearPhoto();
+        feedback.textContent = 'Analiza obrazu zakończona. Odpowiedź zapisana w historii.';
       } catch (error) {
-        answer?.entry.remove();
-        appendTranscript('error', 'Błąd Vision', error.message);
-        feedback.textContent = error.message;
+        bubble?.entry.remove();
+        showError(error, 'Błąd Real Vision');
       } finally {
         visionBusy = false;
-        submit.disabled = false;
-        await loadTasks();
+        setBusy(false);
+        void loadTasks();
       }
       return;
     }
@@ -967,119 +1434,172 @@ function bindChatForm() {
     activeChatController = controller;
     activeChatTaskId = '';
     activeChatCancelMessage = '';
-    const agentName = AGENT_PROFILES.find((profile) => profile.id === agent.value)?.name ?? agent.value;
-    const userMessage = text;
-    appendTranscript('user', `Ty · ${agentName}`, userMessage);
-    const responseBubble = appendTranscript('assistant', `${agentName} · łączenie`);
-    submit.hidden = true;
-    stop.hidden = false;
-    feedback.textContent = 'Łączenie ze strumieniem API…';
-    let responseText = '';
-    let receivedDone = false;
-    let receivedCancelled = false;
-    let responseSource = '';
-    let responseAgent = agentName;
-    let responseSessionId = '';
+    feedback.textContent = 'Dialog Triady: oczekiwanie na model…';
+    let answer = '';
+    let done = false;
+    let cancelled = false;
+    let responseSession = '';
+    let source = '';
+    let replyName = name;
 
     try {
-      await api.chatStream(userMessage, agent.value, activeSessionId, ({ event: streamEvent, payload }) => {
-        if (streamEvent === 'meta' && typeof payload.session_id === 'string') {
-          responseSessionId = payload.session_id;
+      await api.chatStream(prompt, agentId, previousSession, ({ event: kind, payload }) => {
+        if (kind === 'meta') {
+          if (typeof payload.session_id === 'string') responseSession = payload.session_id;
           if (typeof payload.task_id === 'string' && SESSION_ID_PATTERN.test(payload.task_id)) {
             activeChatTaskId = payload.task_id;
           }
-        } else if (streamEvent === 'delta' && typeof payload.text === 'string') {
-          responseText += payload.text;
-          if (responseBubble) responseBubble.text.textContent = responseText;
+        } else if (kind === 'delta' && typeof payload.text === 'string') {
+          answer += payload.text;
+          if (bubble) bubble.text.textContent = answer;
           const transcript = document.getElementById('chat-transcript');
           if (transcript) transcript.scrollTop = transcript.scrollHeight;
-        } else if (streamEvent === 'done') {
-          receivedDone = true;
-          responseSessionId = payload.session_id ?? responseSessionId;
-          responseSource = payload.source ?? '';
-          responseAgent = AGENT_PROFILES.find((profile) => profile.id === payload.agent)?.name ?? responseAgent;
-        } else if (streamEvent === 'cancelled') {
-          receivedCancelled = true;
-          responseSessionId = payload.session_id ?? responseSessionId;
-          if (responseBubble) {
-            responseBubble.heading.textContent = `${agentName} · anulowano przez API`;
-            if (!responseText) responseBubble.text.textContent = 'API potwierdziło przerwanie zadania.';
-          }
-        } else if (streamEvent === 'error') {
-          throw new ApiError(typeof payload.error === 'string' ? payload.error : 'Strumień czatu zakończył się błędem.');
+        } else if (kind === 'ui_update') {
+          // This is an authenticated operator command, not proof of AI inference.
+          void refreshSyncState();
+        } else if (kind === 'done') {
+          done = true;
+          if (typeof payload.session_id === 'string') responseSession = payload.session_id;
+          source = typeof payload.source === 'string' ? payload.source : 'API';
+          replyName = AGENT_PROFILES.find(({ id }) => id === payload.agent)?.name ?? name;
+        } else if (kind === 'cancelled') {
+          cancelled = true;
+        } else if (kind === 'error') {
+          throw new ApiError(typeof payload.error === 'string' ? payload.error : 'Błąd strumienia.');
         }
       }, controller.signal);
-      if (receivedCancelled) {
-        if (responseSessionId && SESSION_ID_PATTERN.test(responseSessionId)) {
-          activeSessionId = responseSessionId;
-          recordHistory(responseSessionId, userMessage);
+      if (!done && !cancelled) throw new ApiError('Serwer nie potwierdził zakończenia odpowiedzi.');
+      if (cancelled) {
+        if (bubble) bubble.heading.textContent = `${name} · anulowano`;
+        feedback.textContent = 'API potwierdziło anulowanie.';
+      } else {
+        if (bubble) bubble.heading.textContent = `${replyName} · ${source}`;
+        if (responseSession && SESSION_ID_PATTERN.test(responseSession)) {
+          activeSessionId = responseSession;
+          recordHistory(responseSession, prompt);
         }
-        feedback.textContent = 'API potwierdziło anulowanie zadania.';
-        return;
+        message.value = '';
+        feedback.textContent = source === 'system_command'
+          ? 'Polecenie systemowe zapisane i zsynchronizowane. To nie była inferencja AI.'
+          : 'Odpowiedź z modelu zapisana w historii Dialogu Triady.';
       }
-      if (!receivedDone) throw new ApiError('Strumień zakończył się przed potwierdzeniem odpowiedzi.');
-      if (responseBubble) responseBubble.heading.textContent = `${responseAgent} · ${responseSource || 'API'}`;
-      if (responseSessionId && SESSION_ID_PATTERN.test(responseSessionId)) {
-        activeSessionId = responseSessionId;
-        recordHistory(responseSessionId, userMessage);
-      }
-      message.value = '';
-      feedback.textContent = responseSource === 'ollama'
-        ? 'Odpowiedź lokalnej Ollamy; API nie zapisuje historii sesji.'
-        : responseSource === 'model_provider'
-          ? 'Odpowiedź podłączonego dostawcy AI; brak zapisu historii sesji.'
-          : 'Odpowiedź API.';
     } catch (error) {
       if (error?.name === 'AbortError') {
-        if (responseBubble) responseBubble.heading.textContent = `${agentName} · strumień przerwany lokalnie`;
-        feedback.textContent = activeChatCancelMessage
-          || 'Zatrzymano odbiór strumienia. Backend nie potwierdził anulowania zadania.';
+        if (bubble) bubble.heading.textContent = `${name} · transmisja przerwana`;
+        feedback.textContent = activeChatCancelMessage ||
+          'Przerwano odbiór. Anulowanie działania modelu nie zostało potwierdzone.';
       } else {
-        if (!responseText && responseBubble) responseBubble.entry.remove();
-        else if (responseBubble) responseBubble.heading.textContent = `${agentName} · odpowiedź nieukończona`;
-        appendTranscript('error', `Błąd API${error.status ? ` · HTTP ${error.status}` : ''}`, error.message);
-        feedback.textContent = error.status === 503
-          ? 'Model niedostępny — API nie wygenerowało odpowiedzi.'
-          : error.message;
+        if (!answer) bubble?.entry.remove();
+        else if (bubble) bubble.heading.textContent = `${name} · niepełna odpowiedź`;
+        showError(error);
       }
     } finally {
       activeChatController = null;
       activeChatTaskId = '';
-      submit.hidden = false;
-      stop.hidden = true;
-      stop.disabled = false;
-      stop.textContent = 'Zatrzymaj';
-      await loadTasks();
+      setBusy(false);
+      void loadTasks();
     }
   });
-  document.getElementById('chat-stop')?.addEventListener('click', async (event) => {
-    const stop = event.currentTarget;
-    if (!activeChatController || stop.disabled) return;
+
+  stop.addEventListener('click', async () => {
     const controller = activeChatController;
+    if (!controller || stop.disabled) return;
     const taskId = activeChatTaskId;
     if (!taskId) {
-      activeChatCancelMessage = 'Brak ID zadania do anulowania. Zatrzymano odbiór strumienia; anulowanie serwera nie jest potwierdzone.';
+      activeChatCancelMessage = 'Przerwano odbiór lokalnie; backend nie potwierdził anulowania.';
       controller.abort();
       return;
     }
     stop.disabled = true;
     stop.textContent = 'Anulowanie…';
-    setText('chat-feedback', 'Wysyłanie żądania anulowania do API…');
     try {
-      const payload = await api.cancelTask(taskId);
-      if (payload.task?.id !== taskId) throw new ApiError('API nie potwierdziło zadania do anulowania.');
-      if (activeChatController !== controller) return;
-      setText('chat-feedback', `API przyjęło anulowanie (${payload.task.status}); oczekiwanie na zdarzenie SSE.`);
+      const response = await api.cancelTask(taskId);
+      if (response.task?.id !== taskId) throw new ApiError('Brak potwierdzenia anulowania.');
+      feedback.textContent = `API przyjęło anulowanie (${response.task.status}).`;
     } catch (error) {
-      if (activeChatController !== controller) return;
+      activeChatCancelMessage = 'Nie potwierdzono anulowania przez API; odbiór przerwany lokalnie.';
       controller.abort();
-      activeChatCancelMessage = error.status === 404
-        ? 'Ten backend nie udostępnia anulowania zadania. Zatrzymano odbiór strumienia lokalnie; anulowanie serwera nie jest potwierdzone.'
-        : error.status === 401 || error.status === 403
-          ? `${error.message} Zatrzymano odbiór strumienia; anulowanie serwera nie jest potwierdzone.`
-          : `${error.message} Zatrzymano odbiór strumienia; anulowanie serwera nie jest potwierdzone.`;
-      setText('chat-feedback', activeChatCancelMessage);
+      feedback.textContent = error.message || activeChatCancelMessage;
     }
+  });
+}
+
+
+function bindAgentDialog() {
+  const form = document.getElementById('agent-dialog-form');
+  const feed = document.getElementById('agent-dialog-feed');
+  const input = document.getElementById('agent-dialog-content');
+  const recipient = document.getElementById('agent-dialog-recipient');
+  const state = document.getElementById('agent-dialog-state');
+  const send = document.getElementById('agent-dialog-send');
+  if (!form || !feed || !input || !recipient || !state || !send) return;
+  let lastId = 0;
+  let busy = false;
+  let loading = false;
+
+  const nameOf = (id) => ({
+    operator: 'Ty', all: 'Wszyscy',
+    aria: 'Aria', alex: 'Alex', astyria: 'Astyria', aurelius: 'Aurelius',
+  }[id] || id);
+
+  async function refreshDialog() {
+    if (loading) return;
+    loading = true;
+    try {
+      const data = await api.getAgentDialog(lastId);
+      if (!Array.isArray(data.messages)) throw new ApiError('Nieprawidłowa lista wiadomości AI.');
+      for (const item of data.messages) {
+        if (!Number.isSafeInteger(item.id) || item.id <= lastId) continue;
+        if (typeof item.content !== 'string' || typeof item.sender !== 'string') continue;
+        if (lastId === 0 && feed.querySelector('.empty-state')) feed.replaceChildren();
+        const article = document.createElement('article');
+        article.className = 'transcript-entry transcript-' + (item.sender === 'operator' ? 'user' : 'assistant');
+        const heading = document.createElement('p');
+        heading.className = 'transcript-heading';
+        heading.textContent = `${nameOf(item.sender)} → ${nameOf(item.recipient)} · API (wiadomość, nie dowód inferencji)`;
+        const content = document.createElement('p');
+        content.className = 'transcript-text';
+        content.textContent = item.content;
+        article.append(heading, content);
+        feed.append(article);
+        lastId = item.id;
+      }
+      if (Number.isSafeInteger(data.lastId)) lastId = Math.max(lastId, data.lastId);
+      state.textContent = 'Kanał dostępny · odpowiedzi agentów są dobrowolne; brak automatycznego wywoływania modeli.';
+      feed.scrollTop = feed.scrollHeight;
+    } catch (error) {
+      state.textContent = error.message || 'Kanał AI jest niedostępny.';
+    } finally {
+      loading = false;
+    }
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    const content = input.value.trim();
+    if (!content) return;
+    busy = true;
+    send.disabled = true;
+    try {
+      const result = await api.postAgentDialog(recipient.value, content);
+      if (result.accepted !== true) throw new ApiError('API nie potwierdziło zapisu.');
+      input.value = '';
+      await refreshDialog();
+    } catch (error) {
+      state.textContent = error.message || 'Wysłanie wiadomości nie powiodło się.';
+    } finally {
+      busy = false;
+      send.disabled = false;
+    }
+  });
+  document.getElementById('agent-dialog-refresh')?.addEventListener('click', refreshDialog);
+  void refreshDialog();
+  window.setInterval(() => {
+    if (document.visibilityState === 'visible') void refreshDialog();
+  }, 5000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void refreshDialog();
   });
 }
 
@@ -1145,11 +1665,30 @@ if (typeof document !== 'undefined') {
   renderAgentProfiles(document.getElementById('agent-list'));
   bindNavigation();
   bindChatForm();
+  bindAgentDialog();
   bindTerminalForm();
   bindWorkCreateForm();
   renderHistory();
+  document.getElementById('global-sync')?.addEventListener('click', synchronizeAllData);
   document.getElementById('refresh-status')?.addEventListener('click', refreshDashboard);
+  document.getElementById('codex-refresh')?.addEventListener('click', loadCodexStatus);
+  document.getElementById('ai-center-refresh')?.addEventListener('click', loadAiCenterStatus);
   document.getElementById('refresh-tasks')?.addEventListener('click', refreshWork);
+  document.getElementById('github-refresh')?.addEventListener('click', refreshGithub);
+  document.getElementById('sync-example')?.addEventListener('click', () => {
+    const textarea = document.getElementById('chat-message');
+    if (textarea) {
+      textarea.value = '/panel tytuł Moje Centrum AI';
+      textarea.focus();
+    }
+  });
+  void refreshSyncState();
+  window.setInterval(() => {
+    if (document.visibilityState === 'visible') void refreshSyncState();
+  }, 5000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void refreshSyncState();
+  });
   void refreshDashboard();
   let savedSession = '';
   try {

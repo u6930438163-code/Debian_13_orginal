@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { readWorkspaceSources, readWithTimeout } from './global_sync.mjs';
 
 const repositoryRoot = fileURLToPath(new URL('../../', import.meta.url));
 const TEST_SESSION_ID = '123e4567-e89b-42d3-a456-426614174000';
@@ -261,4 +262,203 @@ test('original Alex capability and explicit operator handoff stay behind tokeniz
   });
   assert.equal(blocked.status, 400);
   assert.equal(upstream.requests.length, 2, 'invalid dispatch must not reach API');
+});
+
+test('Codex private diagnostic proxy is read-only and forwards only server token', async (t) => {
+  const upstream = await startUpstreamDouble(t);
+  const base = await startUiProxy(t, upstream.port, 'codex-private-test-token');
+  const response = await fetch(`${base}/api/v1/codex/status`, {
+    headers: {Authorization: 'Bearer browser-token-not-forwarded'},
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {ok: true, path: '/api/v1/codex/status'});
+  assert.equal(upstream.requests.at(-1).authorization, 'Bearer codex-private-test-token');
+  assert.equal(upstream.requests.at(-1).url, '/api/v1/codex/status');
+  const denied = await fetch(`${base}/api/v1/codex/execute`, {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body:'{}',
+  });
+  assert.equal(denied.status, 404);
+  assert.equal(upstream.requests.length, 1);
+});
+
+test('local Ollama approval route is authenticated, bodyless, and cannot execute code', async (t) => {
+  const upstream = await startUpstreamDouble(t);
+  const base = await startUiProxy(t, upstream.port, 'fixture-ai-center-operator-token');
+  const status = await fetch(`${base}/api/v1/ai-center/status`);
+  assert.equal(status.status, 200);
+  assert.deepEqual(await status.json(), {ok: true, path: '/api/v1/ai-center/status'});
+  const approved = await fetch(`${base}/api/v1/tasks/${TEST_TASK_ID}/approve-analysis`, {
+    method: 'POST', headers: {Authorization: 'Bearer injected-browser-token'},
+  });
+  assert.equal(approved.status, 200);
+  assert.equal((await approved.json()).path,
+               `/api/v1/tasks/${TEST_TASK_ID}/approve-analysis`);
+  assert.equal(upstream.requests[1].authorization,
+               'Bearer fixture-ai-center-operator-token');
+  assert.equal(upstream.requests[1].body, '');
+  const denied = await fetch(`${base}/api/v1/tasks/${TEST_TASK_ID}/approve-analysis`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({root:true}),
+  });
+  assert.equal(denied.status, 400);
+  assert.equal(upstream.requests.length, 2, 'local Ollama approval route must reject bodies');
+});
+
+test('integration progress is read-only and uses only the server-side token', async (t) => {
+  const upstream = await startUpstreamDouble(t);
+  const base = await startUiProxy(t, upstream.port, 'integration-progress-test-operator-token');
+  const response = await fetch(`${base}/api/v1/integration-progress`, {
+    headers: {Authorization: 'Bearer untrusted-browser-credential'},
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {ok: true, path: '/api/v1/integration-progress'});
+  assert.equal(upstream.requests.length, 1);
+  assert.equal(upstream.requests[0].authorization,
+               'Bearer integration-progress-test-operator-token');
+  const denied = await fetch(`${base}/api/v1/integration-progress`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}',
+  });
+  assert.equal(denied.status, 404);
+  assert.equal(upstream.requests.length, 1, 'POST must never reach the runtime');
+});
+
+test('global sync verifies all ten read-only sources without claiming a deploy', async () => {
+  const calls = [];
+  const responses = {
+    getStatus: {application: {status: 'running'}},
+    getSyncState: {revision: 2, title: 'Debian13'},
+    getTasks: {tasks: []},
+    getEvents: {events: []},
+    getGitHubStatus: {githubApiReachable: true, partial: false},
+    getIntegrations: {integrations: []},
+    getIntegrationProgress: {kind: 'local_integration_checklist', notOsCompletion: true, percentage: 30},
+    getAiCenterStatus: {type: 'local_ollama_queue', workerHeartbeatVerified: false},
+    getCodexStatus: {module: 'codex', cliInstalled: false},
+    getOriginalAgents: {agents: ['Alex','Aria','Astyria','Aurelius']},
+  };
+  const client = Object.fromEntries(Object.entries(responses).map(([key, value]) => [
+    key, async () => { calls.push(key); return value; },
+  ]));
+  client.deployCode = () => { throw new Error('Must never deploy source'); };
+  client.dispatchAgent = () => { throw new Error('Must never start AI'); };
+  const result = await readWorkspaceSources(client);
+  assert.equal(result.total, 10);
+  assert.equal(result.successful, 10);
+  assert.deepEqual(result.failed, []);
+  assert.equal(result.complete, true);
+  assert.equal(result.readOnly, true);
+  assert.equal(result.deployedCode, false);
+  assert.equal(result.aiExecutionVerified, false);
+  assert.equal(calls.length, 10);
+  assert.equal(calls.every(name => name.startsWith('get')), true);
+});
+
+test('global sync finishes when a read-only source never responds', async () => {
+  const client = {
+    getStatus: async () => ({application: {status: 'running'}}),
+    getSyncState: async () => ({revision: 0, title: 'Debian 13'}),
+    getTasks: async () => ({tasks: []}),
+    getEvents: async () => ({events: []}),
+    getGitHubStatus: () => new Promise(() => {}), // Simulate stalled GitHub.
+    getIntegrations: async () => ({integrations: []}),
+    getIntegrationProgress: async () => ({
+      kind: 'local_integration_checklist', notOsCompletion: true, percentage: 30,
+    }),
+    getAiCenterStatus: async () => ({
+      type: 'local_ollama_queue', workerHeartbeatVerified: false,
+    }),
+    getCodexStatus: async () => ({module: 'codex', cliInstalled: false}),
+    getOriginalAgents: async () => ({agents: ['Alex', 'Aria', 'Astyria', 'Aurelius']}),
+  };
+  const result = await readWorkspaceSources(client, {timeoutMs: 30});
+  assert.equal(result.total, 10);
+  assert.equal(result.successful, 9);
+  assert.deepEqual(result.failed, ['GitHub']);
+  assert.equal(result.complete, false);
+  assert.equal(result.readOnly, true);
+  assert.equal(result.deployedCode, false);
+  assert.equal(result.aiExecutionVerified, false);
+});
+
+test('bounded dashboard refresh settles even when one view stalls', async () => {
+  const calls = [];
+  const results = await Promise.allSettled([
+    () => { calls.push('status'); return Promise.resolve('ok'); },
+    () => { calls.push('stalled'); return new Promise(() => {}); },
+    () => { calls.push('work'); return Promise.resolve({ tasks: [] }); },
+  ].map(operation => readWithTimeout(operation, 30)));
+  assert.deepEqual(calls.sort(), ['stalled', 'status', 'work']);
+  assert.equal(results.length, 3);
+  assert.equal(results[0].status, 'fulfilled');
+  assert.equal(results[0].value, 'ok');
+  assert.equal(results[1].status, 'rejected');
+  assert.equal(results[1].reason.message, 'Source read timed out');
+  assert.equal(results[2].status, 'fulfilled');
+  assert.deepEqual(results[2].value, {tasks: []});
+  await assert.rejects(readWithTimeout(() => Promise.reject(new Error('unavailable')), 30),
+    /unavailable/);
+});
+
+test('global sync reports partial API failure without leaking upstream secrets', async () => {
+  const secret = 'secret-in-mock-network-error';
+  const client = {
+    getStatus: async () => ({application: {status: 'running'}}),
+    getSyncState: async () => ({revision: 0, title: 'Panel'}),
+    getTasks: async () => ({tasks: []}),
+    getEvents: async () => ({events: []}),
+    getGitHubStatus: async () => { throw new Error(secret); },
+    getIntegrations: async () => ({integrations: []}),
+    getIntegrationProgress: async () => ({kind: 'local_integration_checklist', notOsCompletion: true, percentage: 30}),
+    getAiCenterStatus: async () => ({type: 'local_ollama_queue', workerHeartbeatVerified: false}),
+    getCodexStatus: async () => ({module: 'codex', cliInstalled: false}),
+    getOriginalAgents: async () => ({agents: []}),
+  };
+  const value = await readWorkspaceSources(client);
+  assert.equal(value.complete, false);
+  assert.equal(value.successful, 8);
+  assert.deepEqual(value.failed, ['GitHub','Profile AI']);
+  assert.equal(JSON.stringify(value).includes(secret), false);
+  assert.equal(value.deployedCode, false);
+  const noCodex = {...client};
+  delete noCodex.getCodexStatus;
+  const missingMethod = await readWorkspaceSources(noCodex);
+  assert.equal(missingMethod.successful, 7);
+  assert.deepEqual(missingMethod.failed, ['GitHub', 'Codex', 'Profile AI']);
+});
+
+test('global sync UI control and read-only JS are served locally', async (t) => {
+  const upstream = await startUpstreamDouble(t);
+  const base = await startUiProxy(t, upstream.port);
+  const index = await fetch(base + '/');
+  assert.equal(index.status, 200);
+  const html = await index.text();
+  assert.match(html, /id="global-sync"/);
+  assert.match(html, /id="global-sync-status"/);
+  assert.match(html, /Nie wdraża kodu/);
+  const module = await fetch(base + '/global_sync.mjs');
+  assert.equal(module.status, 200);
+  assert.match(await module.text(), /readWorkspaceSources/);
+  assert.equal(upstream.requests.length, 0);
+});
+
+test('SVL status proxy only allows read-only requests and never forwards browser token', async (t) => {
+  const upstream = await startUpstreamDouble(t);
+  const base = await startUiProxy(t, upstream.port, 'svl-operator-token-from-private-server');
+  const result = await fetch(base + '/api/v1/svl/status', {
+    headers: {Authorization: 'Bearer browser-untrusted-token'},
+  });
+  assert.equal(result.status, 200);
+  assert.deepEqual(await result.json(), {ok: true, path: '/api/v1/svl/status'});
+  assert.equal(upstream.requests.length, 1);
+  assert.equal(upstream.requests[0].authorization, 'Bearer svl-operator-token-from-private-server');
+  const attemptedWrite = await fetch(base + '/api/v1/svl/status', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'bump', root: true}),
+  });
+  assert.equal(attemptedWrite.status, 404);
+  assert.equal(upstream.requests.length, 1);
+  const page = await fetch(base + '/');
+  const html = await page.text();
+  assert.match(html, /id="svl-status"/);
+  assert.equal(html.includes('Polecenie <code>/svl</code>'), true);
 });

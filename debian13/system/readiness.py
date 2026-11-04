@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -32,7 +33,7 @@ def request_json(base_url: str, path: str, token: str | None = None) -> tuple[in
         headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(base_url + path, headers=headers)
     try:
-        response = urllib.request.build_opener(NoRedirectHandler()).open(request, timeout=3)
+        response = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirectHandler()).open(request, timeout=3)
     except urllib.error.HTTPError as error:
         response = error
     with response:
@@ -45,7 +46,13 @@ def request_json(base_url: str, path: str, token: str | None = None) -> tuple[in
         return response.status, data
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Debian 13 local API core readiness")
+    parser.add_argument(
+        "--require-provider", action="store_true",
+        help="also block when no optional model provider is configured (not inference proof)",
+    )
+    args = parser.parse_args(argv)
     base_url = os.environ.get("DEBIAN13_SYSTEM_API_URL", "http://127.0.0.1:8080").rstrip("/")
     try:
         parsed = urlsplit(base_url)
@@ -113,7 +120,13 @@ def main() -> int:
     else:
         print("Model provider: NOT CONFIGURED; inference not tested")
 
-    return 0 if debian_13 and healthy and auth_enforced and authenticated and provider_configured else 1
+    core_ready = debian_13 and healthy and auth_enforced and authenticated
+    if args.require_provider and not provider_configured:
+        print("Optional provider required by operator: BLOCKED")
+    elif not provider_configured:
+        print("Core API ready independently of optional AI configuration.")
+    print("Inference: UNVERIFIED; no model request was made")
+    return 0 if core_ready and (not args.require_provider or provider_configured) else 1
 
 
 if __name__ == "__main__":

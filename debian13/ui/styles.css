@@ -482,6 +482,41 @@ h1 {
   color: #f0f7fc;
 }
 
+.global-sync-control {
+  flex: 0 1 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.global-sync-control button {
+  white-space: nowrap;
+}
+
+.global-sync-control p {
+  margin: 0;
+  max-width: 270px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .global-sync-control {
+    flex: 0 0 auto;
+    align-items: flex-start;
+    width: 100%;
+  }
+  .global-sync-control p {
+    text-align: left;
+    max-width: 100%;
+  }
+}
+
 .workspace-view {
   min-width: 0;
   min-height: 0;
@@ -1281,4 +1316,242 @@ h2 {
 @media (max-width: 480px) {
   .work-task-form { padding: 12px; }
   .work-task-form button { width: 100%; }
+}
+
+/* Dialog Triady · original Hyperspace-inspired look, no legacy SVL modules. */
+:root {
+  --surface: #0a172b;
+  --surface-raised: #101f37;
+  --border: #254363;
+  --muted: #a2b8d3;
+  --accent: #67d9ff;
+  --focus: #89e7ff;
+}
+body {
+  background:
+    radial-gradient(ellipse at 55% -20%, rgb(21 99 181 / 26%), transparent 52rem),
+    radial-gradient(ellipse at 0% 80%, rgb(5 69 122 / 20%), transparent 42rem),
+    #050b18;
+}
+.topbar {
+  border-bottom-color: rgb(89 199 250 / 19%);
+}
+.brand-mark {
+  border-color: rgb(73 186 255 / 34%);
+  background: linear-gradient(145deg,#102f59,#071323);
+  color: #8edfff;
+  box-shadow: inset 0 0 20px rgb(27 110 233 / 10%), 0 0 18px rgb(24 100 175 / 12%);
+}
+.view-intro h1 {
+  background: linear-gradient(100deg,#f2fbff,#93defd 65%,#4686fd);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.chat-view {
+  position: relative;
+  isolation: isolate;
+  border-color: rgb(79 186 247 / 28%);
+  background: radial-gradient(circle at 100% 0%, rgb(21 83 143 / 12%), transparent 28rem),
+              linear-gradient(155deg, #081528,#060e1d);
+  box-shadow: 0 20px 54px rgb(0 0 0 / 25%), inset 0 1px rgb(81 184 240 / 7%);
+}
+.triad-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgb(70 159 228 / 20%);
+  background: rgb(5 18 38 / 78%);
+}
+.triad-chat-header h2 {
+  margin: 5px 0;
+  font-size: clamp(1rem, 2vw, 1.3rem);
+  color: #e9f5ff;
+  letter-spacing: .015em;
+}
+.triad-kicker {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: .11em;
+  color: #80b5da;
+}
+.triad-model-tag {
+  display: inline-block;
+  padding: 4px 7px;
+  border-radius: 999px;
+  border: 1px solid #255477;
+  font-family: ui-monospace, monospace;
+  letter-spacing: .05em;
+  font-size: .58em;
+  color: #8de4ff;
+  vertical-align: middle;
+}
+.triad-chat-header p {
+  color: #95aeca;
+  font-size: 11px;
+  margin: 0;
+}
+.triad-connection {
+  font-size: 10px;
+  font-family: ui-monospace, monospace;
+  color: #89bcdc;
+}
+.chat-view .transcript {
+  background: linear-gradient(180deg, rgb(3 13 29 / 48%),rgb(5 15 29 / 75%));
+  border-radius: 10px;
+}
+.chat-view .composer {
+  border-top: 1px solid rgb(73 177 233 / 12%);
+}
+.chat-view .vision-select {
+  border-color: rgb(52 167 234 / 28%);
+}
+.chat-view .transcript-heading {
+  color: #94dfff;
+}
+@media (max-width: 540px) {
+  .triad-chat-header { padding: 10px; }
+  .triad-chat-header h2 { font-size: 1rem; }
+}
+
+/* Independent Codex coding center. Actual coding requires the Codex CLI on host. */
+.codex-view .runtime-grid dd { overflow-wrap: anywhere; }
+.codex-command-list {
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 18px;
+  background: #050e1b;
+  color: #a5ddff;
+  border: 1px solid #215177;
+  border-radius: 12px;
+  line-height: 1.8;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}
+
+/* Independent AI Center 24/7 */
+.ai-center-view .ai-center-diagram {
+  display: grid;
+  gap: 9px;
+  padding: 16px;
+  margin: 15px 0;
+  border: 1px solid #264364;
+  background: #060e1b;
+  border-radius: 20px;
+}
+.ai-center-step {
+  display: grid;
+  gap: 8px;
+  padding: 18px;
+  text-align: center;
+  background: linear-gradient(140deg,#0c192b,#111e32);
+  border: 1px solid #263d55;
+  border-radius: 14px;
+}
+.ai-center-step > strong,
+.ai-center-heading strong { color: #e9f5ff; font-size: clamp(16px,2.5vw,21px); }
+.ai-center-step > span, .ai-center-step p { color: #a8bed7; font-size: 12px; }
+.ai-center-step-highlight { background: #14273c; border-color: #2d6482; }
+.ai-center-arrow { text-align: center; color: #89d3ff; font-size: 22px; line-height: 1; }
+.ai-center-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; text-align: left; }
+.ai-center-badge { border-radius: 99px; font-size: 11px; color: #c2d3e3; background: #26364e; padding: 6px 12px; }
+.ai-center-agents { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+.ai-center-agents > div { display: grid; align-content: center; gap: 7px; min-height: 94px; padding: 14px; background: #172537; border-radius: 12px; }
+.ai-center-agents strong { color: #e9f5ff; font-size: 17px; }
+.ai-center-agents span { color: #afc2d6; font-size: 12px; }
+.ai-center-chips { display:flex;flex-wrap:wrap;justify-content:center;gap:6px; padding-top: 12px; border-top:1px solid #324255;}
+.ai-center-chips span { border-radius:99px; background:#203247; color:#c4e4f7; padding:6px 10px; font-size:12px; }
+.ai-center-step .work-limit-note { text-align: left; }
+.ai-task-result { white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow:auto; background:#071426; color:#c4ddf5; padding:12px; border-radius:9px; }
+@media (max-width: 440px) {
+  .ai-center-view .ai-center-diagram { padding: 8px; }
+  .ai-center-step { padding: 12px; }
+  .ai-center-agents { gap: 6px; }
+  .ai-center-agents > div { min-height: 84px; padding: 9px; }
+}
+
+/* GitHub Connect and durable cross-tab synchronization. Content is real API data. */
+.app-shell {
+  width: 100%;
+  max-width: none;
+  padding-inline: clamp(8px, 1.2vw, 24px);
+}
+.github-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+.github-panel {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  background: #071527;
+  border-radius: 12px;
+}
+.github-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.github-panel-header h3 { margin: 0; font-size: 15px; }
+.github-count { font-variant-numeric: tabular-nums; color: var(--accent); }
+.github-items {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+.github-item {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  border-bottom: 1px solid var(--border);
+  padding: 9px 0;
+}
+.github-item a { color: #a1ddff; overflow-wrap: anywhere; }
+.github-item small { color: var(--muted); }
+.github-view { overflow: auto; }
+.sync-indicator { display: grid; gap: 4px; }
+.sync-details {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 7px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.sync-details summary { cursor: pointer; }
+.sync-details p { margin: 10px 0 6px; }
+.sync-details ul { max-height: 90px; overflow: auto; padding-left: 18px; }
+.sync-details code { color: #e6f2ff; }
+#sync-example { font-size: 11px; }
+@media (max-width: 760px) {
+  .app-shell { width: 100%; padding-inline: 8px; }
+  .github-panel { padding: 10px; }
+  .github-grid { grid-template-columns: 1fr; }
+  .sync-details { font-size: 11px; }
+}
+
+.original-ai-result {
+  max-width: 100%;
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: #081321;
+  border-radius: 9px;
+  color: #e7f5fc;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 45vh;
+  overflow-y: auto;
 }

@@ -1,6 +1,16 @@
 name: Debian 13 validation
 on:
   workflow_dispatch:
+  # A green PR check does not validate the exact main commit after merging.
+  # Run the same checks on main so the read-only update preflight can verify it.
+  push:
+    branches:
+      - main
+    paths:
+      - '.devcontainer/debian13/**'
+      - '.github/workflows/debian13-validation.yml'
+      - 'docs/DEBIAN13_AGENT_SETUP.md'
+      - 'debian13/**'
   pull_request:
     paths:
       - '.devcontainer/debian13/**'
@@ -122,6 +132,32 @@ jobs:
               assert error.code == 503
           print("PASS: real one-command app, GUI, Work persistence, 4 original agent statuses, honest AI 503")
           PY
+      - name: Verify consistent SQLite backup of running app
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          export DEBIAN13_STATE_DIR="$TMP_DIR/state"
+          export WORKSPACE_DIR="$TMP_DIR/workspace"
+          export DEBIAN13_UI_PORT=3000 DEBIAN13_API_PORT=8765
+          bash debian13/start-local.sh >"$TMP_DIR/launch.log" 2>&1 &
+          LAUNCH_PID=$!
+          trap 'kill "$LAUNCH_PID" 2>/dev/null || true; wait "$LAUNCH_PID" 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT
+          for attempt in $(seq 1 60); do
+            if test -f "$WORKSPACE_DIR/dialog_triady.sqlite3" \
+               && test -f "$WORKSPACE_DIR/.debian13-work.sqlite3" \
+               && test -f "$WORKSPACE_DIR/.debian13-ui-sync.sqlite3"; then break; fi
+            if ! kill -0 "$LAUNCH_PID" 2>/dev/null; then exit 1; fi
+            sleep .2
+          done
+          export DEBIAN13_SYSTEM_API_URL="http://127.0.0.1:$DEBIAN13_API_PORT"
+          export DEBIAN13_API_TOKEN="$(cat "$DEBIAN13_STATE_DIR/operator-token")"
+          python3 debian13/system/readiness.py
+          python3 debian13/state_backup.py --workspace "$WORKSPACE_DIR" --output "$TMP_DIR/private-snapshot"
+          python3 debian13/state_backup.py --verify "$TMP_DIR/private-snapshot"
+          test "$(stat -c '%a' "$TMP_DIR/private-snapshot")" = "700"
+          echo "PASS: all three running SQLite state stores backed up and verified without stopping server"
+
       - name: Run UI and real backend together on loopback
         shell: bash
         env:
@@ -136,9 +172,25 @@ jobs:
             python3 debian13/ui/dev_server.py > /tmp/debian13-ui.log 2>&1 &
           UI_PID=$!
           trap 'kill "$API_PID" "$UI_PID" 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 30); do
-            if python3 -c 'import urllib.request;urllib.request.urlopen("http://127.0.0.1:3000/", timeout=1)' >/dev/null 2>&1; then break; fi
-            sleep 1
+          # The static HTML can serve before the API has bound its socket.
+          # Wait for the complete UI -> private proxy -> live API contract.
+          for attempt in $(seq 1 60); do
+            if python3 - <<'PY'
+          import json, urllib.request
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:3000/api/v1/status", timeout=1) as response:
+                  data = json.load(response)
+                  assert response.status == 200 and data["application"]["status"] == "running"
+          except Exception:
+              raise SystemExit(1)
+          PY
+            then break; fi
+            if ! kill -0 "$API_PID" 2>/dev/null || ! kill -0 "$UI_PID" 2>/dev/null; then
+              echo "API or UI exited before readiness" >&2
+              cat /tmp/debian13-api.log /tmp/debian13-ui.log >&2 || true
+              exit 1
+            fi
+            sleep .25
           done
           python3 - <<'PY'
           import json
@@ -150,6 +202,18 @@ jobs:
           status = json.load(urllib.request.urlopen(base + "/api/v1/status", timeout=5))
           assert status["application"]["status"] == "running"
           assert status["model"]["status"] == "not_configured"
+          # Real SVL Python state engine is reachable through the private GUI proxy.
+          svl = json.load(urllib.request.urlopen(base + "/api/v1/svl/status", timeout=5))
+          assert svl["sourceAvailable"] and svl["readOnly"]
+          assert not svl["operatingSystemBootVerified"]
+          terminal_request = urllib.request.Request(
+              base + "/api/v1/terminal", method="POST",
+              data=json.dumps({"command": "svl report"}).encode(),
+              headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(terminal_request, timeout=5) as terminal_response:
+              terminal = json.load(terminal_response)
+          assert terminal["exitCode"] == 0
+          assert "svl_python_legacy_state_engine" in terminal["output"]
           agents = json.load(urllib.request.urlopen(base + "/api/v1/agents", timeout=5))
           assert len(agents["agents"]) == 4
           assert all(agent["worker"] == "not_running" for agent in agents["agents"])

@@ -59,11 +59,32 @@ python3 debian13/system/readiness.py
 
 The checker verifies the host's `/etc/os-release` is Debian `VERSION_ID=13`,
 health, rejection of anonymous diagnostics with HTTP 401, authenticated
-diagnostics, and whether provider settings are present. It never prints
-credentials. A missing provider blocks readiness; configured settings are not
-proof that the provider is reachable or that inference works. The checker never
-sends a model prompt. Use `docker compose -f debian13/system/compose.yaml down`
-to stop the service.
+diagnostics, and whether optional provider settings are present. It never prints
+credentials. **The core service can be ready without a model or agents.**
+Use `python3 debian13/system/readiness.py --require-provider` when a configured
+provider is mandatory for a specific deployment. A configured provider is still
+not proof that its inference works; the checker never sends a model prompt.
+Use `docker compose -f debian13/system/compose.yaml down` to stop the service.
+
+### Back up Work, chat and UI sync before a manual update
+
+On the **host** running the Python `start-local.sh` setup, create and validate
+a new snapshot in a private directory **outside** `WORKSPACE_DIR`:
+
+```sh
+python3 debian13/state_backup.py --output "$HOME/debian13-snapshot-$(date +%Y%m%d-%H%M%S)"
+# Verify an existing snapshot:
+python3 debian13/state_backup.py --verify "$HOME/debian13-snapshot-YYYYMMDD-HHMMSS"
+```
+
+The script uses SQLite's online backup API for the three live databases
+(`Work`, `Dialog Triady`, UI synchronization), with `integrity_check`,
+SHA-256 checksums and restrictive permissions. It **never restores** anything.
+Treat a backup as sensitive data: it contains actual user tasks and conversations.
+For Docker named volumes, first arrange a private volume snapshot under an
+authorized operator account; these host paths do not automatically reach
+the container's `/workspace`. Restoration requires an explicit offline
+procedure, operator approval and a tested rollback.
 
 ### Verify the PR #97 adapter against the running service
 
@@ -199,3 +220,36 @@ separate; model output is never executed as a command.
 | `POST /v1/chat` | `{"profile":"aria","message":"..."}`; real provider response or explicit error |
 
 Error responses use `{"error":{"code":"...","message":"...","requestId":"..."}}`.
+
+## Oryginalny SVL w terminalu (bez modeli AI)
+
+W `debian13/system/legacy_svl_kernel.py` zachowano oryginalny silnik stanu
+Python z repozytorium `mmitek515-netizen/SVL_System`, źródło
+`svl_kernel.py` (blob `e2f1b867000c7bddcc80dd4d56b5cccedcb2d0e1`).
+To **aplikacyjny** magazyn konfiguracji i historii, a nie kernel Linuksa.
+
+Z poziomu terminala GUI działa bezpieczny, deterministyczny zestaw poleceń:
+```text
+svl status
+svl report
+svl profiles
+```
+Silnik Python jest podłączony przez `svl_compat.py`. Dane są odczytywane
+wyłącznie z opcjonalnego `WORKSPACE_DIR/.svl_kernel_store.json`; jego brak
+oznacza **konfigurację domyślną**, nie działającego agenta. `svl report`
+zwraca tylko wersję, tryb, liczbę wiadomości i zmian oraz informacje
+diagnostyczne, bez treści czatu, sekretów, tokenów czy poleceń z pliku.
+Migracja starszych ustawień modelu odbywa się wyłącznie w pamięci i nie
+nadpisuje pliku. Oryginalny skrypt nie jest uruchamiany przez powłokę z
+uprawnieniami użytkownika.
+
+Dostępne są też chronione tokenem `GET /api/v1/svl/status`,
+`POST /api/v1/terminal` oraz niezależne od modelu polecenie czatu
+`/svl`. Polecenia uruchamiają istniejące funkcje Pythona, **nie** dają
+dostępu do root, arbitralnego `exec`, automatycznych operacji GitHub
+ani uprawnień administratora. AI i Debian 13 ISO nie są uruchamiane przez
+ten adapter.
+
+Walidacja end-to-end uruchamia prawdziwy prywatny serwer API i GUI,
+wykonuje `svl report` przez ten sam proxy HTTP co interfejs, a także
+sprawdza odmowę nieznanych poleceń i brak wycieków danych.

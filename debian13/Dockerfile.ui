@@ -1,0 +1,15 @@
+# Private Debian 13 dashboard, served as a separate 24/7 container.
+# Only published on host loopback through Docker Compose.
+FROM debian:13-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates python3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10002 debian13ui \
+    && useradd --system --uid 10002 --gid debian13ui \
+       --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin debian13ui
+COPY --chown=root:root ui /opt/debian13/ui
+RUN find /opt/debian13/ui -type f -exec chmod 0644 {} \;
+USER 10002:10002
+EXPOSE 3000
+ENTRYPOINT ["python3", "/opt/debian13/ui/dev_server.py"]

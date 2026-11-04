@@ -14,6 +14,9 @@ Default: serve the real Python API + interactive UI on PRIVATE loopback ports.
 Connect an existing AI provider with MODEL_CHAT_URL, MODEL_API_KEY, MODEL_NAME;
 without it the UI works, while AI responses correctly report unavailable.
 Default ports: 3000 for GUI, 8765 for backend (both localhost only).
+Free Ollama text chat (when installed and running on this host):
+  DEBIAN13_LOCAL_OLLAMA=1 OLLAMA_MODEL=llama3.2:3b bash debian13/start-local.sh
+This mode never uses OpenAI API or a paid cloud fallback.
 HELP
 }
 case "${1:-}" in
@@ -42,7 +45,7 @@ try:
 except (ValueError, AssertionError):
     raise SystemExit("ERROR: Provide distinct valid ports DEBIAN13_API_PORT and DEBIAN13_UI_PORT.")
 PY
-if [[ -n "${MODEL_CHAT_URL:-}" ]]; then
+if [[ "${DEBIAN13_LOCAL_OLLAMA:-0}" != "1" && -n "${MODEL_CHAT_URL:-}" ]]; then
   if [[ -z "${MODEL_API_KEY:-}" || -z "${MODEL_NAME:-}" ]]; then
     echo "ERROR: MODEL_CHAT_URL also requires MODEL_API_KEY and MODEL_NAME." >&2
     exit 1
@@ -55,11 +58,37 @@ import ast, sys
 root = Path(sys.argv[1])
 for path in [root / "system/server.py", root / "system/work_store.py",
              root / "system/alex_bridge.py", root / "system/alex_handoff.py",
+             root / "system/chat_memory.py", root / "system/codex_status.py",
+             root / "system/ai_center_worker.py", root / "system/mcp_autoconfigure.py",
+             root / "system/mcp_launcher.py",
+             root / "system/ui_sync.py", root / "system/github_dashboard.py",
+             root / "system/original_agent_handoff.py",
              root / "ui/dev_server.py"]:
     ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 print("PASS: Python runtime, launch ports and application modules are valid.")
 PY
   exit 0
+fi
+
+# Explicit, free, local provider mode. Never use a paid fallback, even when
+# unrelated cloud keys are present on the host. No secrets stored in Git.
+if [[ "${DEBIAN13_LOCAL_OLLAMA:-0}" != "0" && "${DEBIAN13_LOCAL_OLLAMA:-0}" != "1" ]]; then
+  echo "ERROR: DEBIAN13_LOCAL_OLLAMA must be 0 or 1." >&2
+  exit 1
+fi
+if [[ "${DEBIAN13_LOCAL_OLLAMA:-0}" == "1" ]]; then
+  OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2:3b}"
+  if [[ ! "$OLLAMA_MODEL" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,119}$ ]]; then
+    echo "ERROR: Invalid local OLLAMA_MODEL name." >&2
+    exit 1
+  fi
+  # Force loopback; ignore MODEL_CHAT_URL and any remote keys/fallbacks.
+  export MODEL_CHAT_URL="http://127.0.0.1:11434/v1/chat/completions"
+  export MODEL_API_KEY="ollama-local-no-paid-api"
+  export MODEL_NAME="$OLLAMA_MODEL"
+  export OLLAMA_VISION_URL="http://127.0.0.1:11434/v1/chat/completions"
+  export VISION_FALLBACK_ENABLED=0
+  unset VISION_FALLBACK_CHAT_URL VISION_FALLBACK_API_KEY VISION_FALLBACK_MODEL
 fi
 
 STATE_DIR="${DEBIAN13_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/debian13}"
@@ -139,6 +168,10 @@ echo "  GUI: http://127.0.0.1:$UI_PORT"
 echo "  API: http://127.0.0.1:$API_PORT (authenticated, loopback only)"
 echo "  Work: persistent SQLite in private workspace"
 echo "  Alex: not started; original agent requires independent connected runtime"
+if [[ "${DEBIAN13_LOCAL_OLLAMA:-0}" == "1" ]]; then
+  echo "  AI: local Ollama $MODEL_NAME configured on 127.0.0.1:11434; no paid API fallback"
+  echo "  AI: verify Ollama availability and installed model separately; configuration is not inference"
+fi
 if [[ -n "${MODEL_CHAT_URL:-}" ]]; then
   echo "  AI: provider configured; live inference must still be checked"
 else

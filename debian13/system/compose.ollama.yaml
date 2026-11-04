@@ -24,9 +24,14 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command: |
       until OLLAMA_HOST=http://ollama:11434 ollama list >/dev/null 2>&1; do sleep 3; done
-      OLLAMA_HOST=http://ollama:11434 ollama pull "${OLLAMA_MODEL}"
+      OLLAMA_HOST=http://ollama:11434 ollama pull "${OLLAMA_MODEL:-llama3.2:3b}"
+      if [ "${DEBIAN13_OLLAMA_PULL_VISION:-0}" = "1" ] && [ "${OLLAMA_VISION_MODEL:-llama3.2-vision:11b}" != "${OLLAMA_MODEL:-llama3.2:3b}" ]; then
+        OLLAMA_HOST=http://ollama:11434 ollama pull "${OLLAMA_VISION_MODEL:-llama3.2-vision:11b}"
+      fi
     environment:
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2-vision:11b}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+      DEBIAN13_OLLAMA_PULL_VISION: ${DEBIAN13_OLLAMA_PULL_VISION:-0}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-llama3.2-vision:11b}
     networks:
       - default
     security_opt:
@@ -40,8 +45,69 @@ services:
     environment:
       MODEL_CHAT_URL: http://ollama:11434/v1/chat/completions
       MODEL_API_KEY: ollama-local-no-remote-secret
-      MODEL_NAME: ${OLLAMA_MODEL:-llama3.2-vision:11b}
+      VISION_FALLBACK_ENABLED: "0"
+      VISION_FALLBACK_CHAT_URL: ""
+      VISION_FALLBACK_API_KEY: ""
+      VISION_FALLBACK_MODEL: ""
+      MODEL_NAME: ${OLLAMA_MODEL:-llama3.2:3b}
       VISION_MODEL_NAME: ${OLLAMA_VISION_MODEL:-llama3.2-vision:11b}
       DEBIAN13_ALLOW_INTERNAL_OLLAMA: "1"
+      OLLAMA_VISION_URL: http://ollama:11434/v1/chat/completions
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-llama3.2-vision:11b}
+  debian13-ui:
+    build:
+      context: ..
+      dockerfile: Dockerfile.ui
+    image: debian13-ui:local
+    init: true
+    user: "10002:10002"
+    restart: unless-stopped
+    depends_on:
+      - debian13-system
+    environment:
+      DEBIAN13_API_HOST: debian13-system
+      DEBIAN13_API_PORT: "8080"
+      DEBIAN13_UI_PORT: "3000"
+      DEBIAN13_UI_HOST: "0.0.0.0"
+      DEBIAN13_ALLOW_INTERNAL_API: "1"
+      DEBIAN13_API_TOKEN: "${DEBIAN13_API_TOKEN:?Set a private operator token}"
+    ports:
+      - "127.0.0.1:${DEBIAN13_UI_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+  debian13-ai-worker:
+    build:
+      context: .
+    image: debian13-system:local
+    entrypoint: ["python3", "/opt/debian13/system/ai_center_worker.py"]
+    restart: unless-stopped
+    depends_on:
+      ollama-model-init:
+        condition: service_completed_successfully
+    user: "10001:10001"
+    environment:
+      WORKSPACE_DIR: /workspace
+      OLLAMA_CHAT_URL: http://ollama:11434/v1/chat/completions
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
+    volumes:
+      - debian13-workspace:/workspace
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 512m
+    cpus: 1.0
 volumes:
   ollama-models:

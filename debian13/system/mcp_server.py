@@ -20,6 +20,8 @@ TOOLS = {
     "debian13_profiles": ("List configured AI profiles and their real active flags.", "/v1/profiles"),
     "debian13_diagnostics": ("Read authenticated runtime diagnostics; no secrets.", "/v1/diagnostics"),
     "debian13_integrations": ("Read the actual integration configuration status.", "/v1/integrations"),
+    "debian13_ai_center": ("Read genuine local Ollama worker heartbeat and queue counters; no command execution.", "/api/v1/ai-center/status"),
+    "debian13_codex_status": ("Read separate Codex CLI detection and login state on the API host.", "/api/v1/codex/status"),
     "debian13_work_tasks": ("Read persistent review-only Work task queue; no task execution.", "/api/v1/tasks"),
     "debian13_original_agents": ("Check connection status of four original owner agents; profiles do not prove active AI.", "/api/v1/original-agents"),
     "alex_existing_status": (
@@ -67,7 +69,7 @@ def read_api(path: str) -> dict:
     return result
 
 
-def response(request: dict) -> dict | None:
+def response(request: dict, *, api_reader=None, alex_reader=None) -> dict | None:
     request_id = request.get("id")
     method = request.get("method")
     if not isinstance(method, str):
@@ -102,8 +104,8 @@ def response(request: dict) -> dict | None:
             return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "No tool arguments are supported"}}
         try:
             path = TOOLS[params["name"]][1]
-            value = (read_existing_alex(params["name"])
-                     if path.startswith("alex:") else read_api(path))
+            value = ((alex_reader or read_existing_alex)(params["name"])
+                     if path.startswith("alex:") else (api_reader or read_api)(path))
             result = {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}], "isError": False}
         except (ValueError, OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             # Do not echo URLs, bearer credentials, response bodies, or internals.

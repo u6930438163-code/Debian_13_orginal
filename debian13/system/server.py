@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hmac
+import http.client
 import http.server
 import json
 import os
@@ -24,8 +25,19 @@ import uuid
 from pathlib import Path
 
 from work_store import WorkStore
+from github_dashboard import DashboardCache, GitHubUnavailable
+from ui_sync import SyncStore, SyncValidationError, parse_title_command
+from chat_memory import ChatMemory
+import mcp_server
+from codex_status import report as codex_status_report
+from integration_progress import report as integration_progress_report
+from svl_compat import inspect_svl, terminal_svl_report
 from original_agents import report as original_agents_report
 from alex_handoff import AlexHandoffError, capabilities as alex_capabilities, submit_task as submit_to_alex
+from original_agent_handoff import (
+    OriginalAgentError, capabilities as original_review_capabilities,
+    submit as submit_original_review, status as original_review_status,
+)
 
 MAX_BODY_BYTES = 16 * 1024
 MAX_VISION_BODY_BYTES = 3 * 1024 * 1024
@@ -42,30 +54,18 @@ RATE_LIMIT = 30
 TASK_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 TASK_DETAIL_PATH = re.compile(r"^/api/v1/tasks/(" + TASK_UUID + r")$")
 TASK_CANCEL_PATH = re.compile(r"^/api/v1/tasks/(" + TASK_UUID + r")/cancel$")
+SESSION_MESSAGES_PATH = re.compile(r"^/api/v1/sessions/(" + TASK_UUID + r")/messages$")
 TASK_DISPATCH_PATH = re.compile(r"^/api/v1/tasks/(" + TASK_UUID + r")/dispatch$")
+TASK_ORIGINAL_HANDOFF_PATH = re.compile(r"^/api/v1/tasks/(" + TASK_UUID + r")/handoff$")
+TASK_ORIGINAL_STATUS_PATH = re.compile(r"^/api/v1/tasks/(" + TASK_UUID + r")/original-status$")
+TASK_APPROVE_ANALYSIS_PATH = re.compile(r"^/api/v1/tasks/(" + TASK_UUID + r")/approve-analysis$")
 WORK_KINDS = frozenset({"development", "bugfix", "audit", "research"})
 
 PROFILES = {
-    "aria": {
-        "name": "Aria",
-        "role": "Integracja modeli AI i transport",
-        "prompt": "You are Aria, responsible for AI model integration and transport. Be clear about uncertainty.",
-    },
-    "astyria": {
-        "name": "Astyria",
-        "role": "Interfejs, dostępność i wygoda obsługi",
-        "prompt": "You are Astyria, responsible for interface usability and accessibility. Be clear about uncertainty.",
-    },
-    "aurelius": {
-        "name": "Aurelius",
-        "role": "Bezpieczeństwo, prywatność i testy",
-        "prompt": "You are Aurelius, responsible for security, privacy, and testing. Be clear about uncertainty.",
-    },
-    "alex": {
-        "name": "Alex",
-        "role": "Architektura i integracja systemu",
-        "prompt": "You are Alex, responsible for system architecture and integration. Be clear about uncertainty.",
-    },
+    "aria": {"name": "Aria"},
+    "astyria": {"name": "Astyria"},
+    "aurelius": {"name": "Aurelius"},
+    "alex": {"name": "Alex"},
 }
 
 COMMANDS = {
@@ -180,6 +180,16 @@ def command_argv(command: str, workspace: Path) -> list[str]:
 
 
 def run_terminal(command: str, workspace: Path) -> dict:
+    if isinstance(command, str) and command.strip():
+        try:
+            svl_parts = shlex.split(command, posix=True)
+        except ValueError:
+            raise ApiError(400, "invalid_command", "Command quoting is invalid.") from None
+        if svl_parts and svl_parts[0] == "svl":
+            if len(svl_parts) != 2 or svl_parts[1] not in {"status", "report", "profiles"}:
+                raise ApiError(400, "invalid_svl_command",
+                               "Use: svl status | svl report | svl profiles.")
+            return terminal_svl_report(workspace, svl_parts[1])
     argv = command_argv(command, workspace)
     try:
         process = subprocess.Popen(
@@ -260,25 +270,43 @@ def validate_image(image: object) -> str:
     return "data:" + mime + ";base64," + encoded
 
 
-def complete_chat(profile: str, message: str, config: dict, image: str | None = None) -> tuple[str, str]:
+def is_ollama_endpoint(url: str) -> bool:
+    """Recognise Docker Ollama and local Ollama on its native port.
+
+    The /v1/chat/completions image payload for Ollama uses an image_url string.
+    Do not assume arbitrary HTTPS OpenAI-compatible providers are Ollama.
+    """
+    parsed = urllib.parse.urlsplit(url)
+    return (parsed.hostname == "ollama" and parsed.port == 11434) or (
+        parsed.hostname in ("127.0.0.1", "localhost", "::1") and parsed.port == 11434
+    )
+
+
+def complete_chat(profile: str, message: str, config: dict, image: str | None = None,
+                  history: list[dict] | None = None,
+                  notes: list[dict] | None = None,
+                  ollama_image_format: bool = False) -> tuple[str, str]:
     if not config["model_chat_url"] or not config["model_api_key"] or not config["model_name"]:
         raise ApiError(503, "provider_not_configured", "No AI model provider is configured.")
     model = config.get("vision_model_name", "") if image is not None else config["model_name"]
     if not model:
         raise ApiError(503, "vision_not_configured", "A vision model is not configured.")
-    is_ollama = urllib.parse.urlsplit(config["model_chat_url"]).hostname == "ollama"
+    is_ollama = ollama_image_format or is_ollama_endpoint(config["model_chat_url"])
     user_content = message if image is None else [
         {"type": "text", "text": message},
         # Ollama's /v1 Chat Completions docs use a string image_url.
         {"type": "image_url", "image_url": image if is_ollama else {"url": image}},
     ]
+    # No default persona, role, system prompt, custom instructions, or saved
+    # notes are injected into the model. The operator assigns tasks explicitly.
+    # Provider-specific defaults remain outside this application's control.
+    messages = []
+    for item in (history or [])[-24:]:
+        if item.get("role") in ("user", "assistant") and isinstance(item.get("content"), str):
+            messages.append({"role": item["role"], "content": item["content"][:4000]})
+    messages.append({"role": "user", "content": user_content})
     payload = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": PROFILES[profile]["prompt"]},
-            {"role": "user", "content": user_content},
-        ],
-        "temperature": 0.2,
+        "model": model, "messages": messages, "temperature": 0.2,
     }).encode("utf-8")
     request = urllib.request.Request(
         config["model_chat_url"],
@@ -310,6 +338,55 @@ def complete_chat(profile: str, message: str, config: dict, image: str | None = 
     if not isinstance(content, str) or not content.strip():
         raise ApiError(502, "empty_provider_response", "The model provider returned no message.")
     return content.strip()[:MAX_MESSAGE_CHARS], model
+
+
+def validate_ollama_vision_url(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    if (parsed.scheme != "http" or not parsed.hostname
+            or parsed.port != 11434
+            or parsed.hostname not in ("127.0.0.1", "localhost", "::1", "ollama")
+            or (parsed.hostname == "ollama" and os.environ.get("DEBIAN13_ALLOW_INTERNAL_OLLAMA") != "1")
+            or parsed.path != "/v1/chat/completions"
+            or parsed.query or parsed.fragment or parsed.username or parsed.password):
+        raise ValueError("OLLAMA_VISION_URL must target local Ollama port 11434.")
+    return value
+
+
+def complete_vision(profile: str, message: str, config: dict, image: str,
+                    history: list[dict] | None = None,
+                    notes: list[dict] | None = None) -> tuple[str, str, str]:
+    """Always try private Ollama first. External fallback is explicit and optional.
+
+    Images are sent to a paid/external API ONLY when VISION_FALLBACK_ENABLED=1,
+    all fallback settings are provided, and the local attempt fails.
+    """
+    vision_url = config.get("ollama_vision_url") or "http://127.0.0.1:11434/v1/chat/completions"
+    primary = dict(config,
+                   model_chat_url=vision_url,
+                   model_api_key="ollama-local-no-remote-secret",
+                   model_name=config.get("ollama_vision_model") or "llama3.2-vision:11b",
+                   vision_model_name=config.get("ollama_vision_model") or "llama3.2-vision:11b")
+    try:
+        answer, model = complete_chat(profile, message, primary, image, history, notes,
+                                      ollama_image_format=True)
+        return answer, model, "ollama"
+    except ApiError as exc:
+        if exc.code not in ("provider_unavailable", "provider_error", "provider_response_too_large",
+                            "invalid_provider_response", "empty_provider_response"):
+            raise
+        if not config.get("vision_fallback_enabled", False):
+            raise ApiError(503, "ollama_vision_unavailable",
+                           "Ollama Vision is unavailable. External fallback is disabled.") from exc
+        url = config.get("vision_fallback_url", "")
+        key = config.get("vision_fallback_key", "")
+        model = config.get("vision_fallback_model", "")
+        if not url or not key or not model:
+            raise ApiError(503, "vision_fallback_not_configured",
+                           "Vision fallback was enabled but its credentials are missing.") from exc
+        fallback = dict(config, model_chat_url=url, model_api_key=key,
+                        model_name=model, vision_model_name=model)
+        content, model_name = complete_chat(profile, message, fallback, image, history, notes)
+        return content, model_name, "vision_fallback_api"
 
 
 def runtime_diagnostics(server) -> dict:
@@ -353,6 +430,9 @@ class Debian13Server(http.server.ThreadingHTTPServer):
         self.workspace = Path(config["workspace"]).resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.work_store = WorkStore(self.workspace)
+        self.github_dashboard = DashboardCache()
+        self.ui_sync = SyncStore(self.workspace)
+        self.chat_memory = ChatMemory(self.workspace)
         self._alex_dispatch_lock = threading.Lock()
         self._rates: dict[str, tuple[float, int]] = {}
         self._rates_lock = threading.Lock()
@@ -379,17 +459,23 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_chat_events(self, content: str, profile: str, model: str) -> None:
-        # A provider response is delivered as a single event after completion.
-        # This is NOT token-by-token model streaming and is not persisted.
-        source = "ollama" if urllib.parse.urlsplit(
-            self.server.config["model_chat_url"]
-        ).hostname == "ollama" else "model_provider"
+    def _send_chat_events(self, content: str, profile: str, model: str,
+                          session_id: str, source_override: str | None = None,
+                          ui_revision: int | None = None) -> None:
+        # A complete provider reply is delivered in one SSE delta (not token streaming).
+        # Operator slash commands use the same transport but are NOT AI inference.
+        source = source_override or (
+            "ollama" if is_ollama_endpoint(self.server.config["model_chat_url"])
+            else "model_provider")
         frames = [
-            ("meta", {"model": model, "session_persisted": False}),
+            ("meta", {"model": model, "session_id": session_id, "session_persisted": True}),
             ("delta", {"text": content}),
-            ("done", {"agent": profile, "source": source, "model": model}),
         ]
+        if ui_revision is not None:
+            frames.append(("ui_update", {"revision": ui_revision,
+                                         "source": "operator_command"}))
+        frames.append(("done", {"agent": profile, "source": source, "model": model,
+                                "session_id": session_id}))
         body = "".join(
             "event: " + event + "\n" +
             "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
@@ -414,6 +500,30 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
             }})
             return False
         return True
+
+    def _dialog_identity(self) -> str | None:
+        """Identify a voluntary chat participant from its own bearer credential.
+
+        Neither a client-supplied sender field nor an agent profile is proof
+        of identity. Unconfigured agents cannot publish as AI.
+        """
+        values = self.headers.get_all("Authorization", [])
+        if len(values) != 1 or not values[0].startswith("Bearer "):
+            return None
+        supplied = values[0][7:].encode("utf-8")
+        candidates = [("operator", self.server.config["api_token"])]
+        for agent in PROFILES:
+            secret = os.environ.get("DEBIAN13_DIALOG_" + agent.upper() + "_TOKEN", "")
+            if len(secret) >= 32 and len(secret) <= 512 and all(33 <= ord(c) <= 126 for c in secret):
+                candidates.append((agent, secret))
+        matched = [name for name, secret in candidates
+                   if hmac.compare_digest(supplied, secret.encode("utf-8"))]
+        # Reused credentials would make identity ambiguous: fail closed.
+        return matched[0] if len(matched) == 1 else None
+
+    def _dialog_unauthorized(self) -> None:
+        self._send_json(401, {"error": {"code": "dialog_unauthorized",
+                                       "message": "Individual agent or operator token required."}})
 
     def _allow_request(self) -> bool:
         now = time.monotonic()
@@ -459,7 +569,84 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
             raise ApiError(400, "invalid_json", "Request body must be a JSON object.")
         return data
 
+
+    def _mcp_read_local(self, path: str) -> dict:
+        # Read the same authenticated API via localhost, never a supplied URL.
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=5)
+        try:
+            conn.request("GET", path, headers={
+                "Authorization": "Bearer " + self.server.config["api_token"],
+                "Accept": "application/json",
+            })
+            reply = conn.getresponse()
+            raw = reply.read(mcp_server.MAX_RESPONSE + 1)
+            if reply.status != 200 or len(raw) > mcp_server.MAX_RESPONSE:
+                raise ValueError("Local API unavailable")
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                raise ValueError("Invalid local API response")
+            return data
+        finally:
+            conn.close()
+
+    def _handle_mcp(self) -> None:
+        # Stateless MCP HTTP/JSON transport. Local bind is the safe default.
+        origin = self.headers.get("Origin")
+        allowed = {item.strip() for item in
+                   os.environ.get("DEBIAN13_MCP_ALLOWED_ORIGINS", "").split(",")
+                   if item.strip()}
+        if origin and origin not in allowed:
+            self._send_json(403, {"error": "MCP Origin not allowed"})
+            return
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip()
+        if content_type != "application/json":
+            self._send_json(415, {"error": "MCP requires application/json"})
+            return
+        request = self._read_json(65536)
+        if request.get("jsonrpc") != "2.0":
+            self._send_json(400, {"jsonrpc": "2.0", "id": request.get("id"),
+                                  "error": {"code": -32600, "message": "Invalid Request"}})
+            return
+        result = mcp_server.response(request, api_reader=self._mcp_read_local)
+        if result is None:
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("MCP-Protocol-Version", mcp_server.PROTOCOL_VERSION)
+            self.end_headers()
+        else:
+            self._send_json(200, result,
+                            {"MCP-Protocol-Version": mcp_server.PROTOCOL_VERSION})
+
     def do_GET(self) -> None:
+        parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path == "/api/v1/agent-dialog/messages":
+            if not self._allow_request():
+                return
+            identity = self._dialog_identity()
+            if identity is None:
+                self._dialog_unauthorized()
+                return
+            try:
+                params = urllib.parse.parse_qs(parsed.query, strict_parsing=True, max_num_fields=1)
+                if set(params) - {"after"} or any(len(v) != 1 for v in params.values()):
+                    raise ValueError("unknown query parameter")
+                raw_after = params.get("after", ["0"])[0]
+                if not raw_after.isascii() or not raw_after.isdecimal() or len(raw_after) > 19:
+                    raise ValueError("invalid cursor")
+                after = int(raw_after)
+                messages = self.server.chat_memory.get_agent_dialog(identity, after=after)
+            except ValueError:
+                self._send_json(400, {"error": {"code": "invalid_dialog_cursor",
+                                               "message": "Use a nonnegative numeric after cursor."}})
+                return
+            self._send_json(200, {"messages": messages, "storage": "sqlite",
+                                  "audience": identity, "lastId": messages[-1]["id"] if messages else after,
+                                  "voluntary": True, "agentInferenceVerified": False})
+            return
+        if self.path == "/mcp":
+            self._send_json(405, {"error": "Use MCP POST transport"}, {"Allow": "POST"})
+            return
         if self.path == "/healthz":
             self._send_json(200, {"status": "ok"})
             return
@@ -470,7 +657,8 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/v1/profiles":
             self._send_json(200, {
                 "profiles": [
-                    {"id": key, "name": value["name"], "role": value["role"], "active": False}
+                    {"id": key, "name": value["name"], "role": None,
+                     "assignment": None, "customInstructions": False, "active": False}
                     for key, value in PROFILES.items()
                 ],
                 "providerConfigured": bool(
@@ -505,26 +693,88 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
                     "status": "configured" if report["providerConfigured"] else "not_configured",
                     "inference": "unverified",
                 },
-                "task_state": "Brak uruchomionych workerów",
+                "task_state": ("Worker Ollama: heartbeat potwierdzony" if self.server.work_store.local_worker_status()["workerHeartbeatVerified"] else "Worker Ollama: niepotwierdzony"),
+                "svl": inspect_svl(self.server.workspace),
             })
+            return
+        if self.path == "/api/v1/ai-center/status":
+            self._send_json(200, self.server.work_store.local_worker_status())
+            return
+        if self.path == "/api/v1/codex/status":
+            self._send_json(200, codex_status_report())
+            return
+        if self.path == "/api/v1/svl/status":
+            self._send_json(200, inspect_svl(self.server.workspace))
+            return
+        if self.path == "/api/v1/integration-progress":
+            self._send_json(200, integration_progress_report(
+                codex=codex_status_report(),
+                ollama=self.server.work_store.local_worker_status(),
+                original_agents=original_agents_report(),
+                model_chat_url=self.server.config.get("model_chat_url", ""),
+            ))
+            return
+        if self.path == "/api/v1/sync/state":
+            self._send_json(200, self.server.ui_sync.snapshot())
+            return
+        if self.path == "/api/v1/github/status":
+            try:
+                snapshot = self.server.github_dashboard.get()
+            except GitHubUnavailable:
+                self._send_json(503, {"error": {
+                    "code": "github_unavailable",
+                    "message": "GitHub configuration or API unavailable."}})
+                return
+            self._send_json(200 if snapshot["githubApiReachable"] else 503, snapshot)
             return
         if self.path == "/api/v1/original-agents":
             self._send_json(200, original_agents_report())
             return
         if self.path == "/api/v1/agents":
             self._send_json(200, {"agents": [
-                {"id": key, "name": profile["name"], "role": profile["role"],
-                 "status": "profile_configured", "worker": "not_running"}
+                {"id": key, "name": profile["name"], "role": None,
+                 "assignment": None, "customInstructions": False,
+                 "status": "unassigned", "worker": "not_running"}
                 for key, profile in PROFILES.items()
             ]})
             return
         if self.path == "/api/v1/tasks":
+            live = self.server.work_store.local_worker_status()["workerHeartbeatVerified"]
             self._send_json(200, {"tasks": self.server.work_store.list_tasks(),
-                                  "storage": "sqlite", "workersRunning": 0})
+                                  "storage": "sqlite", "workersRunning": int(live)})
             return
         if self.path == "/api/v1/events":
             self._send_json(200, {"events": self.server.work_store.list_events(),
                                   "storage": "sqlite"})
+            return
+        if self.path == "/api/v1/original-agents/review-capabilities":
+            try:
+                status = original_review_capabilities()
+            except OriginalAgentError:
+                status = {"configured": True, "supported": False,
+                          "agentRuntimeVerified": False, "reason": "source_unavailable"}
+            self._send_json(200, {"originalAgents": status})
+            return
+        original_status_match = TASK_ORIGINAL_STATUS_PATH.fullmatch(self.path)
+        if original_status_match:
+            task = self.server.work_store.get_task(original_status_match.group(1))
+            if not task:
+                self._send_json(404, {"error": {"code": "task_not_found",
+                                                "message": "Task not found."}})
+                return
+            submission = self.server.work_store.get_original_submission(task["id"])
+            if not submission:
+                self._send_json(404, {"error": {"code": "not_submitted",
+                                                "message": "Task was not sent to original AI."}})
+                return
+            try:
+                data = original_review_status(submission["remoteTaskId"], task["agent"])
+            except OriginalAgentError:
+                self._send_json(503, {"error": {
+                    "code": "source_unavailable",
+                    "message": "Original agent status is unavailable or invalid."}})
+                return
+            self._send_json(200, {"originalJob": data})
             return
         if self.path == "/api/v1/alex/capabilities":
             try:
@@ -534,6 +784,16 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
                           "agentRuntimeVerified": False, "reason": "alex_endpoint_unavailable"}
             self._send_json(200, {"alex": status})
             return
+        session_match = SESSION_MESSAGES_PATH.fullmatch(self.path)
+        if session_match:
+            messages = self.server.chat_memory.get_messages(session_match.group(1))
+            if messages is None:
+                self._send_json(404, {"error": {"code": "session_not_found",
+                                                 "message": "Session not found."}})
+            else:
+                self._send_json(200, {"session_id": session_match.group(1),
+                                      "messages": messages, "storage": "sqlite"})
+            return
         match = TASK_DETAIL_PATH.fullmatch(self.path)
         if match:
             task = self.server.work_store.get_task(match.group(1))
@@ -541,19 +801,90 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(404, {"error": {"code": "task_not_found", "message": "Task not found."}})
             else:
                 self._send_json(200, {
-                    "task": task, "alexSubmission":
-                    self.server.work_store.get_alex_submission(task["id"])
+                    "task": task,
+                    "localAnalysis": self.server.work_store.result_for_task(task["id"]),
+                    "alexSubmission": self.server.work_store.get_alex_submission(task["id"]),
+                    "originalSubmission": self.server.work_store.get_original_submission(task["id"])
                 })
             return
         self._send_json(404, {"error": {"code": "not_found", "requestId": str(uuid.uuid4())}})
 
     def do_POST(self) -> None:
+        if self.path == "/api/v1/agent-dialog/messages":
+            if not self._allow_request():
+                return
+            identity = self._dialog_identity()
+            if identity is None:
+                self._dialog_unauthorized()
+                return
+            try:
+                data = self._read_json()
+                if set(data) != {"to", "content"}:
+                    raise ValueError("Only to and content are accepted.")
+                entry = self.server.chat_memory.post_agent_dialog(
+                    identity, data["to"], data["content"])
+            except ValueError:
+                self._send_json(400, {"error": {"code": "invalid_dialog_message",
+                                               "message": "Use a valid recipient and 1-4000 characters."}})
+                return
+            except ApiError as exc:
+                self._send_json(exc.status, {"error": {"code": exc.code, "message": str(exc)}})
+                return
+            self._send_json(201, {"message": entry, "accepted": True,
+                                  "agentInferenceVerified": False,
+                                  "automaticReplyScheduled": False})
+            return
         if not self._allow_request():
             return
         if not self._authorize():
             return
         request_id = str(uuid.uuid4())
         try:
+            if self.path == "/mcp":
+                self._handle_mcp()
+                return
+            approve = TASK_APPROVE_ANALYSIS_PATH.fullmatch(self.path)
+            if approve:
+                if self.headers.get("Content-Length", "0") not in ("", "0") or self.headers.get("Transfer-Encoding"):
+                    self.close_connection = True
+                    raise ApiError(400, "unexpected_body", "Local analysis approval takes no request body.")
+                try:
+                    task = self.server.work_store.approve_local_analysis(approve.group(1))
+                except ValueError as exc:
+                    raise ApiError(409, "task_not_eligible", "Task cannot be approved for local analysis.") from exc
+                if task is None:
+                    raise ApiError(404, "task_not_found", "Task not found.")
+                self._send_json(202, {"task": task, "executionStarted": False,
+                                      "localWorkerHeartbeatVerified":
+                                        self.server.work_store.local_worker_status()["workerHeartbeatVerified"]})
+                return
+            original_handoff = TASK_ORIGINAL_HANDOFF_PATH.fullmatch(self.path)
+            if original_handoff:
+                if self.headers.get("Content-Length", "0") not in ("", "0") or self.headers.get("Transfer-Encoding"):
+                    self.close_connection = True
+                    raise ApiError(400, "unexpected_body",
+                                   "Original agent handoff takes no request body.")
+                task_id = original_handoff.group(1)
+                with self.server._alex_dispatch_lock:
+                    existing = self.server.work_store.get_original_submission(task_id)
+                    if existing:
+                        self._send_json(200, {"originalSubmission": existing,
+                                              "executionStarted": False})
+                        return
+                    task = self.server.work_store.get_task(task_id)
+                    if task is None:
+                        raise ApiError(404, "task_not_found", "Task not found.")
+                    if self.server.work_store.get_alex_submission(task_id):
+                        raise ApiError(409, "already_handed_off",
+                                       "Task already sent through legacy Alex API.")
+                    receipt = submit_original_review(task)
+                    submission = self.server.work_store.record_original_submission(
+                        task_id, receipt["remoteTaskId"])
+                self._send_json(202, {"originalSubmission": submission,
+                                      "executionStarted": False,
+                                      "agentExecutionVerified": False,
+                                      "pullRequestVerified": False})
+                return
             dispatch = TASK_DISPATCH_PATH.fullmatch(self.path)
             if dispatch:
                 if self.headers.get("Content-Length", "0") not in ("", "0") or self.headers.get("Transfer-Encoding"):
@@ -582,9 +913,10 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
                     self.close_connection = True
                     raise ApiError(400, "unexpected_body", "Task cancellation takes no request body.")
                 with self.server._alex_dispatch_lock:
-                    if self.server.work_store.get_alex_submission(cancel.group(1)):
+                    if (self.server.work_store.get_alex_submission(cancel.group(1))
+                            or self.server.work_store.get_original_submission(cancel.group(1))):
                         raise ApiError(409, "already_handed_off",
-                                       "Task accepted by Alex API; local cancellation cannot recall it.")
+                                       "Task accepted by a remote AI API; local cancellation cannot recall it.")
                     task = self.server.work_store.cancel_task(cancel.group(1))
                 if task is None:
                     raise ApiError(404, "task_not_found", "Task not found.")
@@ -624,20 +956,115 @@ class SystemHandler(http.server.BaseHTTPRequestHandler):
                 if not isinstance(message, str) or not message.strip() or len(message) > MAX_MESSAGE_CHARS:
                     raise ApiError(400, "invalid_message", "Message must contain 1–4000 characters.")
                 image = validate_image(data.get("image")) if self.path == "/v1/vision" else None
-                content, model = complete_chat(profile, message.strip(), self.server.config, image)
+                session_id = data.get("session_id")
+                if session_id is not None:
+                    if not isinstance(session_id, str) or not re.fullmatch(TASK_UUID, session_id):
+                        raise ApiError(400, "invalid_session", "Invalid session ID.")
+                    if not self.server.chat_memory.exists(session_id):
+                        raise ApiError(404, "session_not_found", "Session not found.")
+                clean_message = message.strip()
+                if image is None and clean_message.casefold() in ("/status", "/integracje", "/postep", "/svl"):
+                    # Explicit operator commands: deterministic, read-only, no LLM or shell.
+                    if clean_message.casefold() == "/status":
+                        diagnostic = runtime_diagnostics(self.server)
+                        local = self.server.work_store.local_worker_status()
+                        content = (
+                            "Status rzeczywistego API Debian 13: aktywne.\n"
+                            f"Provider modelu: {'skonfigurowany (bez potwierdzenia inferencji)' if diagnostic['providerConfigured'] else 'nieskonfigurowany'}.\n"
+                            f"Worker lokalny Ollama: {'heartbeat aktualny' if local['workerHeartbeatVerified'] else 'brak potwierdzonego heartbeat'}.\n"
+                            "Oryginalni agenci i start pełnego systemu Debian 13: niezweryfikowane."
+                        )
+                    elif clean_message.casefold() == "/svl":
+                        svl = inspect_svl(self.server.workspace)
+                        content = (
+                            "SVL Python: wersja " + str(svl.get("version", "nieznana")) + "\n"
+                            + "Magazyn stanu: " + ("dostępny" if svl.get("storePresent") else "tylko ustawienia domyślne") + "\n"
+                            + "Historia: " + str(svl.get("chatHistoryEntries", 0)) + " wiadomości, "
+                            + str(svl.get("updateEntries", 0)) + " aktualizacji.\n"
+                            + "To starszy silnik stanu SVL; nie uruchamia jądra Debian, root ani agentów AI."
+                        ) if svl.get("stateValid") else "SVL: magazyn nieprawidłowy lub niedostępny; bez zmian danych."
+                    else:
+                        progress = integration_progress_report(
+                            codex=codex_status_report(),
+                            ollama=self.server.work_store.local_worker_status(),
+                            original_agents=original_agents_report(),
+                            model_chat_url=self.server.config.get("model_chat_url", ""),
+                        )
+                        lines = [
+                            f"Integracje: {progress['percentage']}% ({progress['verifiedCount']}/{progress['totalCount']} potwierdzonych kontroli)."
+                        ]
+                        for item in progress["modules"]:
+                            lines.append(
+                                f"{item['name']}: {item['percentage']}% ({item['verifiedCount']}/{item['totalCount']})."
+                            )
+                        lines.append("To nie jest procent gotowości OS ani potwierdzenie działania agentów AI.")
+                        content = "\n".join(lines)
+                    session_id = self.server.chat_memory.save_exchange(
+                        session_id, profile, clean_message, content, "system_command")
+                    if self.path == "/api/v1/chat/stream":
+                        self._send_chat_events(
+                            content, profile, "none", session_id,
+                            source_override="system_command")
+                    else:
+                        self._send_json(200, {
+                            "requestId": request_id, "profile": profile, "content": content,
+                            "model": None, "source": "system_command", "sessionId": session_id,
+                        })
+                    return
+                if image is None:
+                    try:
+                        new_title = parse_title_command(clean_message)
+                        if new_title is not None:
+                            synced = self.server.ui_sync.set_title(new_title)
+                            content = ("Zapisano tytuł interfejsu: " + synced["title"]
+                                       + ". Zmiana zostanie zsynchronizowana we "
+                                       "wszystkich otwartych panelach. "
+                                       "To polecenie systemowe, nie odpowiedź modelu AI.")
+                            session_id = self.server.chat_memory.save_exchange(
+                                session_id, profile, clean_message, content, "system_command")
+                            if self.path == "/api/v1/chat/stream":
+                                self._send_chat_events(
+                                    content, profile, "none", session_id,
+                                    source_override="system_command",
+                                    ui_revision=synced["revision"])
+                            else:
+                                self._send_json(200, {
+                                    "requestId": request_id, "profile": profile,
+                                    "content": content, "model": None,
+                                    "source": "system_command", "sessionId": session_id,
+                                    "uiRevision": synced["revision"]})
+                            return
+                    except SyncValidationError as exc:
+                        raise ApiError(400, "invalid_ui_command", str(exc)) from exc
+                history = self.server.chat_memory.context(session_id)
+                notes = self.server.chat_memory.notes()
+                if image is not None:
+                    content, model, source = complete_vision(
+                        profile, clean_message, self.server.config, image,
+                        history=history, notes=notes)
+                else:
+                    content, model = complete_chat(profile, clean_message, self.server.config,
+                                                   history=history, notes=notes)
+                    source = ("ollama" if is_ollama_endpoint(self.server.config["model_chat_url"])
+                              else "model_provider")
+                session_id = self.server.chat_memory.save_exchange(
+                    session_id, profile, clean_message, content, source, image_attached=image is not None)
                 if self.path == "/api/v1/chat/stream":
-                    self._send_chat_events(content, profile, model)
+                    self._send_chat_events(content, profile, model, session_id)
                     return
                 self._send_json(200, {
-                    "requestId": request_id,
-                    "profile": profile,
-                    "content": content,
-                    "model": model,
+                    "requestId": request_id, "profile": profile, "content": content,
+                    "model": model, "source": source, "sessionId": session_id,
                 })
                 return
             self._send_json(404, {"error": {"code": "not_found", "requestId": request_id}})
         except ApiError as exc:
             self._send_json(exc.status, {"error": {"code": exc.code, "message": str(exc), "requestId": request_id}})
+        except OriginalAgentError as exc:
+            code = 409 if exc.code in ("invalid_task", "unsupported_protocol",
+                                      "unverified_receipt") else 503
+            self._send_json(code, {"error": {"code": exc.code, "message": str(exc),
+                                              "requestId": request_id}})
         except AlexHandoffError as exc:
             code = 409 if exc.code in ("invalid_task", "task_already_executed",
                                        "dispatch_not_enabled", "unsupported_capability",
@@ -660,8 +1087,26 @@ def load_config() -> dict:
         provider_url = validate_provider_url(os.environ.get("MODEL_CHAT_URL", "").strip())
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    try:
+        ollama_vision_url = validate_ollama_vision_url(
+            os.environ.get("OLLAMA_VISION_URL",
+                           "http://127.0.0.1:11434/v1/chat/completions").strip())
+        fallback_enabled = os.environ.get("VISION_FALLBACK_ENABLED", "0") == "1"
+        fallback_url = validate_provider_url(os.environ.get("VISION_FALLBACK_CHAT_URL", "").strip())
+        fallback_key = os.environ.get("VISION_FALLBACK_API_KEY", "")
+        fallback_model = os.environ.get("VISION_FALLBACK_MODEL", "").strip()
+        if fallback_enabled and (not fallback_url or not fallback_key or not fallback_model):
+            raise ValueError("Vision fallback requires URL, API key and model; or disable fallback.")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     return {
         "api_token": token,
+        "ollama_vision_url": ollama_vision_url,
+        "ollama_vision_model": os.environ.get("OLLAMA_VISION_MODEL", "llama3.2-vision:11b"),
+        "vision_fallback_enabled": fallback_enabled,
+        "vision_fallback_url": fallback_url,
+        "vision_fallback_key": fallback_key,
+        "vision_fallback_model": fallback_model,
         "model_chat_url": provider_url,
         "model_api_key": os.environ.get("MODEL_API_KEY", ""),
         "model_name": os.environ.get("MODEL_NAME", ""),

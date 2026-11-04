@@ -1,0 +1,43 @@
+name: "Zadanie dla oryginalnego AI — Debian13_orginal"
+description: "Wskaż Alexa, Arię, Astyrię lub Aureliusa. Zgłoszenie jest zleceniem, nie potwierdzeniem pracy modelu."
+title: "[AI] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Oryginalny projekt: mmitek515-netizen/Debian_13.
+        Wybór agenta nie uruchamia sam w sobie AI ani nie tworzy konta GitHub.
+        Nie wklejaj tutaj kluczy, tokenów ani prywatnych danych.
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent AI
+      description: "Któremu z czterech agentów zlecasz zadanie?"
+      options:
+        - Alex
+        - Aria
+        - Astyria
+        - Aurelius
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Cel i wymagania
+      placeholder: "Co należy ulepszyć, naprawić lub przetestować?"
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Testy i kryteria ukończenia
+      placeholder: "Co należy uruchomić i jak potwierdzimy wynik?"
+    validations:
+      required: true
+  - type: checkboxes
+    id: safeguards
+    attributes:
+      label: Weryfikacja
+      options:
+        - label: "Wiem, że samo przypisanie lub etykieta nie dowodzi uruchomienia AI."
+          required: true
